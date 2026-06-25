@@ -67,37 +67,75 @@ def test_load_agent_skills_binds_mcp_tools():
 
 ### 2. Environment Configuration
 
-Define variables inside a `.env` file at the root of your deployment node/container.
+Define variables inside the appropriate `.env` files for the Headless Server and the Local Workstations.
 
-**Orchestration / Control Plane Configuration:**
+**Headless Server Core Configuration (`server.env`):**
 ```ini
-NODE_NAME=orchestrator
+NODE_NAME=headless-orchestrator-server
 PORT=8000
-DATABASE_URL=sqlite:///./registry.db
+DATABASE_URL=sqlite:///./state_registry.db
 REDIS_URL=redis://localhost:6379/0
-SSL_CA_CERT=/etc/ssl/co-force/ca.crt
-SSL_CERT=/etc/ssl/co-force/orchestrator.crt
-SSL_KEY=/etc/ssl/co-force/orchestrator.key
+# Ollama integration endpoint
+OLLAMA_API_URL=http://localhost:11434
+# Local LLM models to serve via Ollama
+OLLAMA_MODEL=qwen2.5-coder:7b
 ```
 
-**Worker Swarm Node Configuration:**
-```ini
-NODE_NAME=worker-node-1
-PORT=8080
-ORCHESTRATOR_URL=https://orchestrator-host:8000
-REDIS_URL=redis://redis-host:6379/0
-# MCP Servers this node will spin up or connect to
-MCP_SERVERS=["http://localhost:5001/mcp/db", "http://localhost:5002/mcp/fs"]
+**Tauri Workstation & Sandbox Configuration (`config/workstation.json`):**
+Instead of simple environment variables, the workstation CLI / Daemon uses a JSON file to declare its agents and directories.
+
+```json
+{
+  "workstation_id": "c1a938c0-82a1-432d-944d-d7be8d123456",
+  "name": "dev-workstation-macos",
+  "server_url": "http://headless-server:8000",
+  "local_a2a_port": 8080,
+  "sandboxes_root": "./workspaces/sandboxes",
+  "hosted_agents": [
+    {
+      "agent_id": "aa1a2a3b-4c5d-6e7f-8a9b-0c1d2e3f4g5h",
+      "name": "local-coder-agent",
+      "version": "1.2.0",
+      "description": "Writes filesystem scripts and files in sandbox workspace",
+      "capabilities": ["code-write", "local-exec"],
+      "mcp_servers": ["stdio:node-fs-mcp"],
+      "input_schema": {
+        "type": "object",
+        "properties": { "prompt": { "type": "string" } }
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": { "result": { "type": "string" } }
+      }
+    },
+    {
+      "agent_id": "bb2b3b4c-5d6e-7f8a-9b0c-1d2e3f4g5h6i",
+      "name": "local-test-agent",
+      "version": "1.0.0",
+      "description": "Runs test suites and executes shell scripts in sandbox workspace",
+      "capabilities": ["code-test"],
+      "mcp_servers": ["stdio:bash-shell-mcp"],
+      "input_schema": {
+        "type": "object",
+        "properties": { "test_command": { "type": "string" } }
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": { "stdout": { "type": "string" }, "success": { "type": "boolean" } }
+      }
+    }
+  ]
+}
 ```
 
 ---
 
 ### 3. Distributed Service Bootstrapping
 
-To coordinate and manage services, you can containerize the environment.
+To set up the headless server and client environments:
 
-#### 3.1 Local Multi-Service Compose (Docker)
-Example `docker-compose.yml` for unified local testing:
+#### 3.1 Headless Server Docker Compose (`docker-compose-server.yml`)
+The central backend server can be run inside a Docker network, pulling in Ollama for offline LLM support:
 
 ```yaml
 version: '3.8'
@@ -107,55 +145,67 @@ services:
     ports:
       - "6379:6379"
 
-  orchestrator:
+  ollama-service:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+
+  headless-server:
     build:
       context: .
-      dockerfile: Dockerfile.orchestrator
+      dockerfile: Dockerfile.server
     ports:
       - "8000:8000"
     environment:
       - REDIS_URL=redis://event-broker:6379/0
-      - DATABASE_URL=sqlite:///./registry.db
+      - DATABASE_URL=sqlite:///./state_registry.db
+      - OLLAMA_API_URL=http://ollama-service:11434
+      - OLLAMA_MODEL=qwen2.5-coder:7b
     depends_on:
       - event-broker
+      - ollama-service
 
-  worker-coder:
-    build:
-      context: .
-      dockerfile: Dockerfile.worker
-    environment:
-      - ORCHESTRATOR_URL=http://orchestrator:8000
-      - REDIS_URL=redis://event-broker:6379/0
-      - AGENT_TYPE=coder
-    depends_on:
-      - event-broker
-      - orchestrator
-
-  mcp-fs-server:
-    image: co-force-mcp-fs:latest
-    ports:
-      - "5002:5002"
+volumes:
+  ollama_data:
 ```
 
-#### 3.2 Starting Independent Nodes Manually
-If deploying to separate physical or virtual machines, start services as follows:
+#### 3.2 Starting services manually
 
-1.  **Launch the Telemetry Broker:**
+##### Step A: Run the Headless Server Stack
+1.  **Launch the Ollama daemon and pull the model:**
+    ```bash
+    # On the server host
+    ollama serve
+    ollama pull qwen2.5-coder:7b
+    ```
+2.  **Start Redis and the FastAPI control plane:**
     ```bash
     redis-server --protected-mode no
-    ```
-2.  **Start the Central Orchestrator:**
-    ```bash
-    # Runs the registry, WebSocket telemetry distribution, and compiled LangGraph workflows
     uvicorn infrastructure.api.main:app --host 0.0.0.0 --port 8000
     ```
-3.  **Start a Worker Agent:**
+
+##### Step B: Run the Local Workstation Daemon & Sandbox Agents
+1.  **Boot the Workstation Daemon with the client JSON config:**
     ```bash
-    # Starts the sub-agent loop, publishes its AgentCard, and connects to its MCP servers
-    python src/infrastructure/entrypoints/run_agent.py --port 8080 --agent-type coder
+    # This spawns process directories for Coder and Tester, hooks up local MCPs,
+    # and registers the batch WorkstationRegistration to the headless server.
+    python src/infrastructure/entrypoints/run_workstation_daemon.py --config config/workstation.json
     ```
-4.  **Audit the A2A network logs:**
+2.  **Verify Batch Agent Registration:**
+    You can query the headless server registry to verify that both sandboxed agents were added:
     ```bash
-    # Listen to raw telemetry logs on the event broker
-    redis-cli monitor | grep "A2A_EVENT"
+    curl http://headless-server:8000/api/v1/registry/agents
     ```
+
+##### Step C: Run the Tauri Control Client (GUI)
+1.  **Run the Tauri visual interface in development mode:**
+    ```bash
+    cd src/ui/tauri-app
+    npm install
+    npm run tauri dev
+    ```
+    This launches the drag-and-drop workspace UI connecting to the central Headless Server WebSocket. The workspace UI will automatically display the registered sandboxed agents in the nodes list.
+
+

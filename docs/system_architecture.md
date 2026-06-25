@@ -1,112 +1,129 @@
 # System Architecture & Diagrams
 ## Project Co-Force: Centralized Agent Orchestration & Canvas Swarm Platform
 
-### 1. High-Level Architectural Layers
-Co-Force implements a highly decoupled architecture split into three core concepts:
-1.  **Centralized Orchestration & Visualization (Control Plane):** Houses the user interface, workflow canvas editor, agent registry database, and the LangGraph graph execution engine.
-2.  **Distributed Swarm Execution (Data Plane):** Comprises autonomous agent runtimes communicating with the Orchestration layer and peer agents via the **A2A Protocol**.
-3.  **Context, Grounding & Capabilities (MCP Engine):** Decentralized **MCP servers** that expose environment access, database states, knowledge resources, and executable tools directly to the agent swarms.
+#### 1. High-Level Architectural Layers
+Co-Force decomposes its software footprint into distinct operational nodes:
+1.  **Tauri Clients (User/Workspace Plane):** Run locally on client machines (macOS/Linux) or mobile devices.
+    *   **Control Client (GUI):** Features a drag-and-drop Canvas workflow designer (SvelteFlow/ReactFlow) and execution monitor.
+    *   **Client Agent (AI Agent - Antigravity):** A local CLI/Daemon agent that executes system-level tasks (e.g., coding, testing, local compiling) on the developer's machine, orchestrating local actions via MCP.
+2.  **Headless Server (Control Plane):** Runs without a user interface. It acts as the centralized coordinator, hosting the API Gateways, Agent Registry, State/Trace Database, LangGraph runtime engine, and local LLM endpoints (via **Ollama**).
+3.  **MCP Engine (Knowledge, Grounding & Skills):** Standardized Model Context Protocol servers connected either to the Headless Server (for shared enterprise knowledge/databases) or to the local Client Agent (for workstation-specific terminal execution and filesystem access).
 
 ---
 
 ### 2. Distributed System Topology
 
-The following diagram illustrates the generalized logical layout of the platform components across a distributed network:
+The following diagram illustrates the workstation-level daemon spawning multiple sandboxed agents and registering them dynamically with the central server:
 
 ```mermaid
 graph TD
-    subgraph ClientLayer ["Client Interface"]
-        UI["Visual Canvas UI (SvelteFlow / ReactFlow)"]
+    %% Control Client
+    subgraph UIClient ["Tauri GUI Plane"]
+        Control["Tauri Control Client (Canvas UI)"]
     end
 
-    subgraph ControlPlane ["Central Control Plane / Orchestrator Node"]
+    %% Client Workstation
+    subgraph Workstation ["Client Workstation Node (macOS / Linux CLI or App)"]
+        Daemon["Workstation Daemon (A2A Bridge)"]
+        subgraph Sandbox1 ["Sandbox Workspace 1"]
+            Agent1["Sandboxed Agent A1 (Coder)"]
+        end
+        subgraph Sandbox2 ["Sandbox Workspace 2"]
+            Agent2["Sandboxed Agent A2 (Tester)"]
+        end
+        LocalMCP["Workstation FS & Shell MCP Servers"]
+    end
+
+    %% Headless Server
+    subgraph ServerNode ["Central Headless Server Core"]
+        Gateway["API Gateway / WS Server"]
         Reg["Central Agent Registry"]
-        WS["WebSocket Telemetry Server"]
-        Comp["Canvas Workflow Compiler"]
-        LG["LangGraph Engine"]
+        LG["LangGraph Workflow Runner"]
+        DB["State & Trace DB"]
+        Ollama["Local LLM (Ollama)"]
     end
 
-    subgraph DataPlane ["Distributed Worker Swarm Nodes"]
-        Broker["Async Event Broker (Redis/AMQP)"]
-        AgentA["Agent Process A (e.g. Coder)"]
-        AgentB["Agent Process B (e.g. Tester)"]
-    end
+    %% MCP Infrastructure
+    ServerMCP["Enterprise DB & KB MCP Servers"]
 
-    subgraph MCPLayer ["MCP Grounding, Knowledge & Skill Servers"]
-        MCP_FS["MCP Document & File Server"]
-        MCP_DB["MCP Enterprise DB Server"]
-        MCP_Tool["MCP Operating System / Shell Server"]
-    end
+    %% Communications
+    Control <-->|REST & WebSockets| Gateway
+    Daemon <-->|Batch AgentCards & Heartbeats| Gateway
+    Daemon <-->|A2A Task Forwarding| Agent1
+    Daemon <-->|A2A Task Forwarding| Agent2
 
-    %% Client Communication
-    UI <-->|HTTPS / WebSockets| WS
-    UI --->|Submit Canvas JSON| Comp
-    Comp --->|Build Executable State Graph| LG
+    %% Execution Bindings
+    LG <-->|A2A Protocol (HTTP/2)| Daemon
+    LG <-->|Read / Write State| DB
+    LG <-->|Local Inference| Ollama
+    LG <-->|A2A Capability Check| Reg
 
-    %% Control to Data Plane
-    LG <-->|A2A Protocol (HTTP/2)| AgentA
-    LG <-->|A2A Protocol (HTTP/2)| AgentB
-    
-    %% Telemetry Loop
-    AgentA & AgentB --->|Publish Events| Broker
-    Broker --->|Stream Progress Traces| WS
-
-    %% MCP Access
-    AgentA <-->|Stdio / SSE MCP| MCP_FS
-    AgentA <-->|Stdio / SSE MCP| MCP_Tool
-    AgentB <-->|Stdio / SSE MCP| MCP_DB
-    AgentB <-->|Stdio / SSE MCP| MCP_FS
+    %% MCP Tool Connections
+    LG <-->|Enterprise Grounding| ServerMCP
+    Agent1 & Agent2 <-->|Workstation FS & Shell| LocalMCP
 ```
 
-*   **The Canvas UI Compiler:** Compiles a visual node-link structure into a standard LangGraph declaration. Each node represents an A2A-delegated agent step, and edges represent conditional transitions.
-*   **The A2A Broker:** Decouples message-passing using event logs. Agent processes do not need direct awareness of other execution runtimes; they only need to resolve the endpoints from the Central Registry.
-*   **The MCP Boundary:** Agents remain pure reasoning entities. When an agent requires context (knowledge/grounding) or needs to execute an action (skills), it communicates over standard Model Context Protocol ports, separating reasoning from execution effects.
+*   **Workstation Daemon:** Manages the lifecycle of hosted agents. When booted, it reads a local configuration of needed agents, spins them up in directory sandboxes, and registers them in a single batch call.
+*   **Sandbox Isolation:** Each sub-agent is mapped to a dedicated sub-folder on the workstation disk. The workstation daemon intercepts file path parameters and restricts all local filesystem MCP commands to the agent's specific sandbox.
+*   **Dynamic Canvas Loading:** Whenever a workstation registers, the server triggers a WebSocket broadcast, pushing the new nodes to the Tauri Control Client's sidebar catalog in real-time.
 
 ---
 
-### 3. Execution Sequence Diagram
+### 3. Execution Sequence Diagrams
 
-The following sequence outlines how a canvas-defined workflow executes across A2A nodes and uses MCP for data grounding:
-
+#### 3.1 Workstation Boot & Dynamic Canvas Registration Flow
 ```mermaid
 sequenceDiagram
     autonumber
-    actor Client as Canvas Client UI
-    participant LG as LangGraph Engine
+    participant UI as Tauri Control Client (GUI)
+    participant Server as Headless Server (API Gateway)
     participant Registry as Agent Registry
-    participant Broker as Event Broker
-    participant Agent as Worker Agent
-    participant MCP as MCP Server
-
-    Client->>LG: Execute Workflow ID (Compiled Graph)
-    activate LG
-    LG->>Registry: Find Agent matching Capability (e.g. "Database-Query")
-    Registry-->>LG: Return AgentCard (Agent B, endpoint: https://node-b:80)
+    participant Daemon as Workstation Daemon (CLI Host)
     
-    LG->>Agent: Send A2A Message (TASK_DELEGATION)
+    Daemon->>Daemon: Boot local daemon & scan config
+    Daemon->>Daemon: Spawn Agent 1 (Sandbox A) & Agent 2 (Sandbox B)
+    Daemon->>Server: POST /api/v1/registry/workstation/register (WorkstationRegistration JSON)
+    activate Server
+    Server->>Registry: Insert Workstation & Batch AgentCards
+    Server->>UI: WS Broadcast: AGENT_ADDED (Agent 1 & Agent 2 metadata)
+    activate UI
+    UI->>UI: Insert nodes into Visual Canvas sidebar catalog
+    deactivate UI
+    Server-->>Daemon: Registration ACK (200 OK)
+    deactivate Server
+```
+
+#### 3.2 Task Delegation & Multi-Sandbox Execution Flow
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Operator as Human Operator (Tauri Control Client)
+    participant Server as Headless Server (LangGraph)
+    participant Daemon as Workstation Daemon (CLI Host)
+    participant Agent as Sandboxed Agent 1
+    participant MCP as Local MCP Shell Server
+
+    Operator->>Server: Trigger Workflow Run (Compiled Canvas Graph)
+    activate Server
+    Server->>Daemon: A2A Message (TASK_DELEGATION target: Agent 1 ID)
+    activate Daemon
+    Daemon->>Daemon: Resolve Sandbox Workspace Path (sandboxes/agent_1/)
+    Daemon->>Agent: Forward A2A Message (TASK_DELEGATION)
     activate Agent
-    Agent-->>LG: Accept Task (NEGOTIATION_RESPONSE)
+    Agent-->>Daemon: Accept Task (NEGOTIATION_RESPONSE)
+    Daemon-->>Server: Forward ACK
     
-    Agent->>Broker: Publish Event (TaskStarted)
-    Broker-->>Client: Stream Status (Agent B started execution)
-
-    Note over Agent, MCP: MCP Grounding & Skill Resolution
-    Agent->>MCP: Query Resource (Knowledge: Fetch schema documentation)
+    Agent->>MCP: Call Tool (Run command "npm run test" inside sandbox path)
     activate MCP
-    MCP-->>Agent: Document Content & Vector Match
+    MCP-->>Agent: Test Outputs
     deactivate MCP
-
-    Agent->>MCP: Call Tool (Skill: Run read query on database)
-    activate MCP
-    MCP-->>Agent: Query Output (Grounding Data)
-    deactivate MCP
-
-    Agent->>Broker: Publish Event (TaskProgress - Step completed)
-
-    Agent->>LG: Send A2A Message (TASK_COMPLETE with payload)
+    
+    Agent->>Daemon: Send A2A Message (TASK_COMPLETE with outputs)
     deactivate Agent
-    LG-->>Client: Final Output & Trace Complete
-    deactivate LG
+    Daemon->>Server: Forward TASK_COMPLETE A2A Message
+    deactivate Daemon
+    Server-->>Operator: Flow Execution Finished (WS Telemetry)
+    deactivate Server
 ```
 
 ---
