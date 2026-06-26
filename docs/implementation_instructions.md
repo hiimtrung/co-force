@@ -79,10 +79,16 @@ REDIS_URL=redis://localhost:6379/0
 OLLAMA_API_URL=http://localhost:11434
 # Local LLM models to serve via Ollama
 OLLAMA_MODEL=qwen2.5-coder:7b
+
+# Long-term Memory & HITL Integrations (DeerFlow Aligned)
+VECTOR_DB_URL=sqlite:///./memory_vector.db
+SLACK_WEBHOOK_URL=https://example.com/slack-webhook-placeholder
+TELEGRAM_BOT_TOKEN=0000000000:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+TELEGRAM_CHAT_ID=-1000000000000
 ```
 
 **Tauri Workstation & Sandbox Configuration (`config/workstation.json`):**
-Instead of simple environment variables, the workstation CLI / Daemon uses a JSON file to declare its agents and directories.
+Instead of simple environment variables, the workstation CLI / Daemon uses a JSON file to declare its agents and isolated container sandboxes.
 
 ```json
 {
@@ -91,6 +97,8 @@ Instead of simple environment variables, the workstation CLI / Daemon uses a JSO
   "server_url": "http://headless-server:8000",
   "local_a2a_port": 8080,
   "sandboxes_root": "./workspaces/sandboxes",
+  "sandbox_driver": "docker",
+  "docker_image": "co-force/agent-sandbox:2.0",
   "hosted_agents": [
     {
       "agent_id": "aa1a2a3b-4c5d-6e7f-8a9b-0c1d2e3f4g5h",
@@ -98,7 +106,8 @@ Instead of simple environment variables, the workstation CLI / Daemon uses a JSO
       "version": "1.2.0",
       "description": "Writes filesystem scripts and files in sandbox workspace",
       "capabilities": ["code-write", "local-exec"],
-      "mcp_servers": ["stdio:node-fs-mcp"],
+      "mcp_servers": ["stdio:node-fs-mcp", "stdio:jupyter-mcp"],
+      "sandbox_workspace_mount": "/app/workspace",
       "input_schema": {
         "type": "object",
         "properties": { "prompt": { "type": "string" } }
@@ -115,6 +124,7 @@ Instead of simple environment variables, the workstation CLI / Daemon uses a JSO
       "description": "Runs test suites and executes shell scripts in sandbox workspace",
       "capabilities": ["code-test"],
       "mcp_servers": ["stdio:bash-shell-mcp"],
+      "sandbox_workspace_mount": "/app/workspace",
       "input_schema": {
         "type": "object",
         "properties": { "test_command": { "type": "string" } }
@@ -135,7 +145,7 @@ Instead of simple environment variables, the workstation CLI / Daemon uses a JSO
 To set up the headless server and client environments:
 
 #### 3.1 Headless Server Docker Compose (`docker-compose-server.yml`)
-The central backend server can be run inside a Docker network, pulling in Ollama for offline LLM support:
+The central backend server can be run inside a Docker network, pulling in Ollama and a vector service:
 
 ```yaml
 version: '3.8'
@@ -152,6 +162,13 @@ services:
     volumes:
       - ollama_data:/root/.ollama
 
+  vector-db:
+    image: qdrant/qdrant:latest
+    ports:
+      - "6333:6333"
+    volumes:
+      - qdrant_data:/qdrant/storage
+
   headless-server:
     build:
       context: .
@@ -161,14 +178,18 @@ services:
     environment:
       - REDIS_URL=redis://event-broker:6379/0
       - DATABASE_URL=sqlite:///./state_registry.db
+      - VECTOR_DB_URL=http://vector-db:6333
       - OLLAMA_API_URL=http://ollama-service:11434
       - OLLAMA_MODEL=qwen2.5-coder:7b
+      - SLACK_WEBHOOK_URL=https://example.com/slack-webhook-placeholder
     depends_on:
       - event-broker
       - ollama-service
+      - vector-db
 
 volumes:
   ollama_data:
+  qdrant_data:
 ```
 
 #### 3.2 Starting services manually
@@ -180,23 +201,22 @@ volumes:
     ollama serve
     ollama pull qwen2.5-coder:7b
     ```
-2.  **Start Redis and the FastAPI control plane:**
+2.  **Start Redis, Qdrant, and the FastAPI control plane:**
     ```bash
     redis-server --protected-mode no
     uvicorn infrastructure.api.main:app --host 0.0.0.0 --port 8000
     ```
 
-##### Step B: Run the Local Workstation Daemon & Sandbox Agents
-1.  **Boot the Workstation Daemon with the client JSON config:**
+##### Step B: Run the Local Workstation Daemon & Docker Sandboxes
+1.  **Pull the base sandbox container image:**
     ```bash
-    # This spawns process directories for Coder and Tester, hooks up local MCPs,
+    docker pull co-force/agent-sandbox:2.0
+    ```
+2.  **Boot the Workstation Daemon with the client JSON config:**
+    ```bash
+    # This mounts Docker workspaces for Coder and Tester, hooks up container-based MCPs,
     # and registers the batch WorkstationRegistration to the headless server.
     python src/infrastructure/entrypoints/run_workstation_daemon.py --config config/workstation.json
-    ```
-2.  **Verify Batch Agent Registration:**
-    You can query the headless server registry to verify that both sandboxed agents were added:
-    ```bash
-    curl http://headless-server:8000/api/v1/registry/agents
     ```
 
 ##### Step C: Run the Tauri Control Client (GUI)
@@ -206,6 +226,33 @@ volumes:
     npm install
     npm run tauri dev
     ```
-    This launches the drag-and-drop workspace UI connecting to the central Headless Server WebSocket. The workspace UI will automatically display the registered sandboxed agents in the nodes list.
+
+##### Step D: Run Workflows Programmatically via Python SDK (`CoForceClient`)
+1.  **Install the Co-Force client library:**
+    ```bash
+    pip install co-force-client
+    ```
+2.  **Run a script calling a canvas-configured workflow:**
+    ```python
+    import asyncio
+    from coforce.client import CoForceClient
+
+    async def main():
+        client = CoForceClient(server_url="http://headless-server:8000")
+        
+        # Dispatch the workflow run
+        run = await client.run_workflow(
+            workflow_id="deploy-website-graph",
+            inputs={"repo_url": "https://github.com/example/site"}
+        )
+        
+        # Async stream traces and telemetry log events
+        async for event in run.stream_telemetry():
+            print(f"[{event.timestamp}] {event.agent_name} -> {event.status}: {event.message}")
+            
+    if __name__ == "__main__":
+        asyncio.run(main())
+    ```
+
 
 
