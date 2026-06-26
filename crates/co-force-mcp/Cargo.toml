@@ -1,0 +1,23 @@
+[package]
+name = "co-force-mcp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Co-Force MCP Server — passive multi-agent orchestration"
+
+[[bin]]
+name = "co-force-mcp"
+path = "src/main.rs"
+
+[dependencies]
+co-force-core = { path = "../co-force-core" }
+rmcp = { workspace = true }
+schemars = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }

@@ -1,0 +1,22 @@
+[package]
+name = "co-force-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Core library for Co-Force MCP Server — types, DB, engines"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+rusqlite = { workspace = true }
+tokio-rusqlite = { workspace = true }
+tokio = { workspace = true }
+reqwest = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+hostname = { workspace = true }
+sha2 = { workspace = true }
