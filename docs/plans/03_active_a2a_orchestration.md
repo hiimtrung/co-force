@@ -97,6 +97,8 @@ pub struct ProcessManager;
 
 impl ProcessManager {
     /// Spawn một agent CLI trong chế độ background (detached)
+    /// LƯU Ý (F-05/F-23): match hardcode dưới đây CHỈ là minh họa — bản thật đọc
+    /// command template từ config.toml [providers] (provider registry), không match trong Rust.
     pub async fn spawn_agent(provider: &str, task_id: &str, context: &str) -> anyhow::Result<u32> {
         let mut cmd = match provider {
             "antigravity" => {
@@ -137,6 +139,6 @@ Khi nhận MCP Request `co_force_handover`:
 1. Thêm `tokio::sync::broadcast` vào Core, định nghĩa Enum `WorkspaceEvent`.
 2. Truyền `Sender` vào các Use Cases, bổ sung lệnh `send()` ở cuối mỗi Use Case.
 3. Viết module `doc_generator.rs`, triển khai vòng lặp `recv()` và logic replace string bằng Regex (tôn trọng các block code thủ công của user).
-4. Viết module `process_mgr.rs`, thiết lập các lệnh bash phù hợp cho Antigravity CLI và Claude Code. Lưu ý gắn cờ `--auto-approve` hoặc cờ tương đương để nó chạy không cần tương tác (Non-interactive mode).
+4. Viết module `process_mgr.rs` — command templates lấy từ **provider registry trong config** (quyết định F-05, không hardcode provider trong Rust). Spec đã verify cho từng CLI (Claude Code `claude -p`, Codex `codex exec`, Antigravity `agy -p`, kèm caveats C1–C4): **Plan 08 §3**.
 5. Tích hợp Handover Use Case: liên kết giữa việc nhả lock và gọi Process Manager.
 6. Viết Integration Test: Mock OS Command để đảm bảo sự kiện Handover thực sự kích hoạt hàm `spawn`.

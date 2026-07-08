@@ -18,8 +18,8 @@ graph TB
     subgraph DevMachine["💻 Máy Developer (client)"]
         User["👤 Developer"]
         Enroll["🔧 Enrollment one-liner<br/>(chạy 1 lần lúc setup — Plan 05)"]
-        CC["🤖 Claude Code"]
-        CU["🤖 Cursor / Windsurf"]
+        CC["🤖 Claude Code (claude)"]
+        CU["🤖 Codex (codex) · Antigravity (agy)<br/>· Cursor / Windsurf<br/>(subscription CLIs — Plan 08)"]
         Rules["📄 Rules files (tĩnh)<br/>.mcp.json · .cursor/mcp.json ·<br/>AGENTS.md · .cursorrules"]
         SessionCache["📄 project/.co-force/<br/>agent.json + token (0600)<br/>(git-ignored)"]
     end
@@ -220,6 +220,8 @@ Từ 3 ràng buộc này, agents thực thi theo **3 lane**:
 | **L2 — Spawn-by-directive** | Background, cùng máy với requester | Máy client | **Agent yêu cầu spawn tự chạy lệnh** mà server trả về (agent nào cũng có shell tool) | Delegate việc cần file local chưa push; handover khi máy client còn sống |
 | **L3 — Server Worker Pool** | Headless worker | **Máy server**, trong git worktree sandbox | Server (ProcessManager, Plan 03) | Auto-staffing reviewer/critic, recheck nặng, handover khi client offline, delegated task độc lập |
 
+Provider CLIs được hỗ trợ (subscription-first — spec, flags headless, MCP config, auth markers per provider: **Plan 08**): Claude Code (`claude`), Codex CLI (`codex`), Antigravity CLI (`agy`), Cursor CLI — registry khai báo trong config, không hardcode (F-05).
+
 ### 5.2 Lane 2 — Spawn-by-directive (server không chạm được máy client → mượn tay agent)
 
 1. Agent A gọi `co_force_spawn_agent({provider, taskId, placement: "local", context})`.
@@ -242,7 +244,7 @@ Từ 3 ràng buộc này, agents thực thi theo **3 lane**:
                                     # xóa sau khi job xong
 ```
 1. Quality Engine cần role thiếu (vd reviewer cho task X) → tạo job.
-2. ProcessManager: fetch mirror → checkout **đúng `commit_sha`** mà developer khai trong `submit_verification` vào worktree riêng → spawn provider CLI headless (`claude -p ...`) với MCP config trỏ `localhost:3846` + worker token; giới hạn tài nguyên (nice/cgroup), timeout, token budget.
+2. ProcessManager: fetch mirror → checkout **đúng `commit_sha`** mà developer khai trong `submit_verification` vào worktree riêng → spawn provider CLI headless (`claude -p` / `codex exec` / `agy -p` — spec + caveats per provider: **Plan 08 §3**) với MCP config trỏ `localhost:3846` + worker token; giới hạn tài nguyên (nice/cgroup), timeout, token budget.
 3. Worker check-in như một agent bình thường (role reviewer, provider ≠ tác giả nếu policy yêu cầu) → nhận `review_request` → **đọc code thật trong worktree** → `submit_review(findings)`.
 4. Output hai dạng:
    - **Data-only** (mặc định — đủ cho reviewer/critic/recheck): findings/critique trả về qua MCP, không đụng code.
@@ -357,7 +359,7 @@ sequenceDiagram
 | `CHECK_IN_REQUIRED` | gọi tool khi chưa check-in (Lớp 3 interlocking) | `co_force_check_in(...)` |
 | `LOCK_CONFLICT` | file đã bị agent khác claim | `co_force_check_conflicts` → phối hợp/delegate |
 | `GATE_VIOLATION` | nhảy cóc state machine (vd set `completed` trực tiếp) | `co_force_submit_verification(...)` |
-| `EVIDENCE_STALE` | evidence gắn revision cũ (code đổi sau khi submit) | re-run tests → submit lại |
+| `EVIDENCE_STALE` | evidence gắn revision cũ, hoặc `commit_sha` không tồn tại trong mirror (chưa push — F-21) | re-run tests / push commit → submit lại |
 | `SPAWN_DENIED` | quá depth / thiếu remote / provider ngoài allowlist | kèm reason cụ thể |
 | `SERVICE_UNAVAILABLE` | component server down (LLM, DB...) — fail-loud N2 | retry sau `retry_after_secs`; ops đã được alert |
 | `PARTIAL_INDEX` (warning kèm data) | recall khi re-embed đang chạy | kết quả kèm `pending_count` — minh bạch độ tin cậy |
@@ -368,7 +370,7 @@ sequenceDiagram
 | # | Tool | Một dòng | Ghi chú gate/session |
 | :- | :--- | :--- | :--- |
 | **Identity** | | | |
-| 1 | `co_force_check_in` | Đăng ký/khôi phục phiên, nhận pending tasks + team + inbox tồn | Tool duy nhất không cần session bind |
+| 1 | `co_force_check_in` | Đăng ký/khôi phục phiên, nhận pending tasks + team + inbox tồn | Không cần session bind (như `guide`) |
 | 2 | `co_force_whoami` | Tôi là ai, đang làm gì, lock gì | |
 | 3 | `co_force_guide` | Onboarding guide sinh động theo workspace (policy, team, ví dụ) | Không cần session |
 | **Task** | | | |
@@ -425,14 +427,17 @@ sequenceDiagram
 ├── secrets.toml                    # API keys (0600)
 └── .install-state.json             # checkpoint của installer (resume được)
 /var/lib/co-force/
+├── server.db                       # DB cấp SERVER (F-17): api_tokens, workspaces
+│                                   # registry, audit_log — auth tra ở đây TRƯỚC khi
+│                                   # biết workspace; admin/enrollment token scope "*"
 └── data/
     └── {workspaceId}/
-        └── co-force.db             # SQLite duy nhất: agents, tasks, file_locks,
+        └── co-force.db             # SQLite per-workspace: agents, tasks, file_locks,
                                     # memory_entries (embedding BLOB), skills,
                                     # embedding_cache, agent_activities, shared_contexts,
                                     # agent_messages, reviews, critiques,
                                     # verification_records, quality_policies,
-                                    # quality_scores, api_tokens
+                                    # quality_scores
 /var/lib/co-force/workspaces/       # Worker Pool (§5.3)
 └── {wsId}/
     ├── mirror.git                  # bare clone qua deploy key (read-only)

@@ -140,3 +140,74 @@ Quyết định **mới** phát sinh từ định hướng:
 - **N-04:** `wait_events` long-poll ≤ 55s để tương thích Cloudflare proxy timeout.
 
 Các quyết định §5 còn lại (#1 rmcp 2.x + streamable HTTP, #2 vector BLOB trong SQLite, #3 storage layout server-side, #4 guardrails Lớp 1–3 + strict mode opt-in, #6 một binary, #8 provider registry cho spawn) **giữ nguyên hiệu lực**.
+
+---
+
+## 7. Review vòng 3 (2026-07-08, v2.3) — điểm bất khả thi/không hợp lý còn sót sau v2.2
+
+### F-16 🔴 Docker Compose (Plan 06 §2.1) hỏng về network — `bind 127.0.0.1` trong container
+
+Nguyên tắc "chỉ bind 127.0.0.1" đúng cho bare-metal nhưng **bất khả thi trong Docker**: mỗi container có network namespace riêng — `co-force` bind loopback thì container `cloudflared` (và `ollama` ngược lại) **không bao giờ với tới được** qua bridge network. Compose file như viết sẽ không chạy.
+
+**Chốt:** Trong container, services bind `0.0.0.0` (override qua env `CO_FORCE_BIND`); tính cô lập do **compose network không publish port ra host** đảm nhiệm — tương đương về an toàn với loopback ở bare-metal. Cloudflared token-mode: public hostname trên CF dashboard trỏ `http://co-force:3846` (tên service). Đã sửa Plan 06 §2.1.
+
+### F-17 🔴 `api_tokens` trong DB per-workspace là bất khả thi
+
+Architecture §7 đặt `api_tokens` trong `data/{workspaceId}/co-force.db`, nhưng: (1) admin/enrollment token có `workspace_scope = "*"` — không thuộc workspace nào; (2) AuthLayer chạy **trước khi** request được gắn workspace (enrollment còn xảy ra trước khi workspace tồn tại) — không biết mở file DB nào để tra token.
+
+**Chốt:** Thêm **DB cấp server** `/var/lib/co-force/server.db`: `api_tokens`, `workspaces` (registry id ↔ tên ↔ đường dẫn data), `audit_log`, install/ops state. DB per-workspace giữ phần còn lại. Đã sửa architecture §7, Plan 06 §4.1, Master Plan WS-A.
+
+### F-18 🔴 Cơ chế giao agent token cho client (Plan 05 §3) không hoạt động như mô tả
+
+Hai lỗi ghép vào nhau:
+1. `.mcp.json` env expansion (`${CO_FORCE_TOKEN}`) đọc **biến môi trường của process client** — không có cơ chế nào tự đọc file `.co-force/token`. Script ghi token vào file rồi tham chiếu `${VAR}` = client nhận header rỗng.
+2. `.mcp.json`/`.cursor/mcp.json` là file **project-scope, mặc định được commit để chia sẻ team** — trong khi agent token là **per-máy**. Nhét token per-máy vào file chia sẻ là mâu thuẫn thiết kế (buộc gitignore file vốn sinh ra để commit).
+
+**Chốt (đã sửa Plan 05 §3):** token đi vào **config user/machine-scope, nằm ngoài repo**: Claude Code dùng `claude mcp add -s local -t http ... --header` (ghi vào `~/.claude.json`, per-project-per-máy, không commit); Cursor/Windsurf dùng config global `~/.cursor/mcp.json` / `~/.codeium/windsurf/mcp_config.json`. Chỉ fallback ghi token thẳng vào file project (CI/generic) mới cần gitignore + `git check-ignore` gate như cũ. Kèm theo: script **verify header thật sự được gửi** (gọi `tools/list`); client nào không hỗ trợ custom header → in hướng dẫn thay vì ghi config chết.
+
+### F-19 🟡 Plan 04 mâu thuẫn chính sách N2 + API Ollama lỗi thời
+
+1. §3.1 "lưu memory với `vector_id = null`, cron 5 phút re-embed" — viết theo tinh thần fallback cũ, **âm thầm** (vi phạm N2). Chốt hành vi per-tool: `store_memory` khi embed fail → **vẫn lưu** (không mất dữ liệu) nhưng response ghi rõ `index_status: "pending"`; `recall` khi không embed được query → `SERVICE_UNAVAILABLE` (không có kết quả thay thế); queue re-embed xả khi LLM hồi phục. Nhất quán với `PARTIAL_INDEX` (architecture §6.3) và Master Plan §5.
+2. Endpoint `/api/embeddings` đã **deprecated** phía Ollama — dùng `/api/embed` (nhận batch `input`, trả `embeddings: [[f32]]`).
+3. §1 "dựa hoàn toàn vào Local LLMs nhằm bảo mật" đã lỗi thời: embedding/classifier luôn local, **reasoner được phép đi cloud** (N-03) — tài liệu phải nói rõ trade-off dữ liệu gửi đi khi user chọn cloud.
+4. Pseudo-code chunking: struct `Chunk` không có `id` nhưng children tham chiếu `parent_id`; `parent_id` sinh ra **sau** khi push parent với `parent_id: None` → mọi liên kết parent-child đứt. Đã sửa mẫu.
+
+### F-20 🟡 Task state machine (Plan 07 §3) có trạng thái cụt & thiếu đường thoát
+
+- `blocked` và `pending_handover` **không có transition ra** — task vào là kẹt vĩnh viễn.
+- `awaiting_approval` không có đường user **từ chối** (chỉ có approve).
+- Không có `cancelled` — user không thể hủy task sai/hết cần mà không phá state machine.
+
+**Chốt:** thêm `blocked → in_progress` (dependency resolved), `pending_handover → in_progress` (agent mới nhận qua L2/L3), `pending_handover → approved` (timeout không ai nhận → về backlog), `awaiting_approval → draft` (user reject kèm lý do), và `cancelled` reachable từ mọi trạng thái chưa completed (chỉ user/admin). Đã sửa Plan 07 §3.
+
+### F-21 🟡 Revision tracking "phát hiện code đổi sau submit" là bất khả thi như mô tả
+
+Plan 07 bước 4 viết "revision tăng khi lock/unlock ghi nhận **file đổi** sau submit" — server **không nhìn thấy filesystem client**, không thể biết file đổi. Định nghĩa lại theo sự kiện server quan sát được: revision tăng khi (a) task quay lại `in_progress` (rework), (b) agent lock thêm/lock lại files của task sau khi đã có evidence, (c) submit_verification mới, (d) `commit_sha` mới. Khi workspace có git remote + L3 bật: server **verify `commit_sha` tồn tại trong mirror** ngay lúc `submit_verification` (fetch trước) — không thấy commit → `EVIDENCE_STALE {reason: "commit_not_found"}` yêu cầu push. Không có remote: chấp nhận giới hạn — hàng rào thật là reviewer chạy test độc lập. Đã sửa Plan 07 §5.1, architecture §6.3.
+
+### F-22 🟡 Deadlock policy `reviewer_must_differ = "provider"` khi hệ chỉ có 1 provider
+
+Workspace chỉ có agents Claude Code + worker pool `providers = ["claude-code"]` → không bao giờ thỏa policy → **mọi task kẹt ở code_review vĩnh viễn** (auto-staffing cũng chịu). Đứng gate + alert là đúng tinh thần N2, nhưng để user phát hiện lúc runtime là không hợp lý. **Chốt:** validate lúc **set policy / enroll / install**: nếu `reviewer_must_differ="provider"` mà < 2 providers khả dụng → từ chối set kèm hướng dẫn (thêm provider hoặc hạ về `"agent"`), dashboard cảnh báo khi số provider tụt xuống 1. Đã sửa Plan 07 §8.
+
+### F-23 🟢 Tài liệu còn tham chiếu API/mô hình đã hủy (sửa ngay để DEV không copy nhầm)
+
+| Nơi | Vấn đề | Sửa |
+| :--- | :--- | :--- |
+| `progress.md` §2 | Còn "`#[rmcp::server]`", "Transport (stdio / sse)" | → `tool_router`/`ServerHandler`, streamable-http |
+| Plan 02 §3.2 sample | Sample code còn `#[rmcp::server]` | → `#[tool_router]` + ghi chú API thật |
+| Plan 03 §4.1 + bước 4 | Hardcode `match provider` (antigravity/claude) trong Rust — trái quyết định F-05 (provider registry trong config) | Ghi chú sample minh họa; command template lấy từ `config.toml [providers]` |
+| Plan 04 §2 | Comment "Trả về vector 1024 dimensions" hardcode | Dimension theo model config (đổi model → re-embed, Plan 06 §7) |
+| Architecture §6.4 | Tool 1 ghi "duy nhất không cần session" nhưng tool 3 (`guide`) cũng không cần | Sửa wording |
+
+### F-24 🟢 `wait_events` 55s vs timeout tool-call phía client MCP
+
+55s nằm dưới timeout Cloudflare (100s) nhưng **một số MCP client có timeout tool-call riêng ngắn hơn** — client cắt sớm thì long-poll thành lỗi lặp. Chốt: default `timeoutSecs = 25`, max 55; enrollment script chạy 1 lần `wait_events` thật để đo và in khuyến nghị nếu client cắt sớm. Đã ghi vào Plan 07 §4.2.
+
+---
+
+## 8. Review vòng 4 (2026-07-08, v2.4) — Provider CLI coverage
+
+### F-25 🟡 Toàn bộ docs chỉ nhắc Claude Code CLI — thiếu Codex CLI & Antigravity CLI (đã sửa)
+
+Kiến trúc trước đây hardcode `claude`/`antigravity-cli` phỏng đoán trong ví dụ; không có spec tích hợp cho **Codex CLI** (OpenAI) và **Antigravity CLI `agy`** (Google — kế nhiệm Gemini CLI, Gemini CLI đã shutdown 2026-06-18). Điều này mâu thuẫn trực tiếp với Quality Engine: `reviewer_must_differ = "provider"` và critique đa mô hình (Plan 07) chỉ có nghĩa khi ≥ 2 provider thật sự tham gia — liên đới F-22.
+
+**Đã deep-research (docs chính thức OpenAI/Google) + đối chiếu `ref/tutti`** (dự án shared-workspace đa agent chạy trên subscription — mô hình `ProviderSpec` registry với binary names, adapter command, auth markers, login spec per provider là mẫu tốt; Tutti điều khiển Codex qua `codex app-server` và các CLI khác qua ACP). Kết quả: **Plan 08 mới** (`docs/plans/08_provider_cli_integration.md`) — subscription-first, registry khai báo, spec verified cho claude/codex/agy/cursor-agent, 4 caveats phải xử lý trong code (C1: Codex `exec` auto-cancel MCP approvals — chỉ bypass trong L3 sandbox; C2: `bearer_token_env_var` cần env var thật; C3: agy MCP header chưa chắc — verify lúc enroll + stdio shim fallback; C4: auth-status parser per provider). Đồng bộ: architecture §1/§5, Plans 03/05/06/07, roadmap.

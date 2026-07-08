@@ -71,7 +71,7 @@ impl CheckInUseCase {
 ## 3. Thiết Kế MCP Server
 **Vị trí:** `crates/co-force-mcp/src/main.rs`
 
-Dùng macro `#[rmcp::server]` của thư viện `rmcp` v0.16.
+Dùng rmcp **2.x** (`#[tool_router]` + `#[tool]` + `ServerHandler` — xem banner đầu file). Code mẫu bên dưới giữ nguyên dạng minh họa cấu trúc cũ; khi code phải theo API thật.
 
 ### 3.1 Server Struct
 ```rust
@@ -91,7 +91,7 @@ pub struct CoForceMcp {
 Gắn mô tả chi tiết vào `description` vì đây là prompt để kích thích Agent gọi tool.
 
 ```rust
-#[rmcp::server]
+#[tool_router] // API thật rmcp 2.x — kèm #[tool_handler] impl ServerHandler; params bọc Parameters<T> (derive JsonSchema)
 impl CoForceMcp {
     #[tool(description = "MANDATORY: Call this first before any workspace action...")]
     async fn co_force_check_in(
@@ -147,5 +147,5 @@ match args.transport {
 3. Trong `co-force-mcp/Cargo.toml`, thêm thư viện `rmcp` và `tokio`.
 4. Viết `main.rs`, cài đặt `CoForceMcp` struct.
 5. Cài đặt các trait method bằng macro `#[tool]`. Đảm bảo copy chính xác Tool Signatures từ Appendix B của URD.
-6. Thêm bộ parser CLI args (`clap` hoặc `pico-args`) để chọn Transport mode (SSE/Stdio).
+6. Thêm bộ parser CLI args (`clap`) để chọn Transport mode (Streamable HTTP / Stdio).
 7. Khởi chạy thử: `cargo run -p co-force-mcp -- --transport stdio` và nhập JSON-RPC tay để kiểm thử vòng ngoài.

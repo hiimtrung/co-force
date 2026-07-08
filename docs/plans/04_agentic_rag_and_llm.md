@@ -8,6 +8,11 @@
 > - Che sau trait `VectorSearch` — khi workspace vượt ~50k entries, nâng cấp lên `sqlite-vec` (cùng file DB) hoặc `hnsw_rs` mà không đổi use case.
 > - Hệ quả: không còn index file riêng → UC-30 (Vector DB corruption recovery) bị loại khỏi scope.
 > - Bước 5 trong "Trình tự Triển khai" bên dưới đọc theo quyết định này.
+>
+> **⚠️ Cập nhật v2.3 (F-19):**
+> 1. Dùng endpoint **`/api/embed`** của Ollama (nhận batch `input`, trả `embeddings: [[f32]]`) — `/api/embeddings` đã deprecated.
+> 2. Hành vi khi LLM down chốt theo N2 (no silent degradation): `store_memory` **vẫn lưu** (không mất dữ liệu) nhưng response ghi rõ `index_status: "pending"` + queue re-embed; `recall` không embed được query → `SERVICE_UNAVAILABLE` (không có kết quả thay thế). §3.1 bên dưới đọc theo hướng này.
+> 3. Câu "dựa hoàn toàn Local LLMs" chỉ còn đúng cho **embedding + classifier**; **reasoner** được phép đi cloud (N-03) — khi user chọn cloud, nội dung spec/diff summary sẽ rời máy (nói rõ trong installer + docs, mặc định vẫn local `qwen3:14b`).
 
 ## 1. Context & Mục Tiêu
 Tính năng RAG (Retrieval-Augmented Generation) và phân loại dữ liệu (Classification) của Co-Force dựa hoàn toàn vào Local LLMs (Ollama) nhằm bảo mật code dự án. Module này thiết kế thuật toán **Agentic Chunking**, giải quyết nhược điểm của fixed-size chunking truyền thống (làm rách logic của code).
@@ -29,7 +34,8 @@ use async_trait::async_trait;
 #[cfg_attr(test, mockall::automock)]
 #[async_trait]
 pub trait LlmProvider: Send + Sync {
-    /// Trả về vector 1024 dimensions
+    /// Số dimension phụ thuộc model config (mxbai-embed-large = 1024);
+    /// đổi model/dimension → re-embed toàn bộ (Plan 06 §7), không hardcode.
     async fn embed(&self, text: &str) -> anyhow::Result<Vec<f32>>;
     
     /// Trả về Type phân loại (Memory/Knowledge/Skill) và độ tự tin (0.0 -> 1.0)
@@ -57,13 +63,13 @@ pub struct OllamaProvider {
 impl OllamaProvider {
     pub async fn embed(&self, text: &str) -> anyhow::Result<Vec<f32>> {
         #[derive(Deserialize)]
-        struct EmbedResponse { embedding: Vec<f32> }
+        struct EmbedResponse { embeddings: Vec<Vec<f32>> }
 
         // timeout 30s
-        let req = self.client.post(format!("{}/api/embeddings", self.base_url))
+        let req = self.client.post(format!("{}/api/embed", self.base_url)) // /api/embeddings đã deprecated
             .json(&serde_json::json!({
                 "model": self.embedding_model,
-                "prompt": text
+                "input": text            // /api/embed nhận batch; response: { embeddings: [[f32]] }
             }))
             .timeout(std::time::Duration::from_secs(30));
 
@@ -72,12 +78,12 @@ impl OllamaProvider {
             return Err(anyhow::anyhow!("Ollama error: {}", res.status()));
         }
         
-        let parsed: EmbedResponse = res.json().await?;
-        Ok(parsed.embedding)
+        let mut parsed: EmbedResponse = res.json().await?;
+        parsed.embeddings.pop().ok_or_else(|| anyhow::anyhow!("empty embeddings"))
     }
 }
 ```
-**Lưu ý Fallback:** Nếu `embed()` trả về `Err`, Use Case sẽ bắt lỗi này, vẫn lưu Memory vào SQLite nhưng đánh dấu cột `vector_id = null`. Một Background Cron Job chạy 5 phút/lần sẽ quét các dòng `vector_id = null` và gọi lại hàm `embed()`.
+**Lưu ý Resilience (KHÔNG phải silent fallback — F-19):** Nếu `embed()` trả về `Err`, `StoreMemoryUseCase` vẫn lưu Memory (embedding NULL) nhưng **response phải nói rõ** `index_status: "pending"` — agent/user biết entry chưa search được. Background queue quét entries thiếu embedding và re-embed khi LLM hồi phục; trong lúc đó `recall` trả kèm warning `PARTIAL_INDEX {pending_count}`. Riêng `recall` mà không embed được **query** → trả `SERVICE_UNAVAILABLE`, tuyệt đối không thay bằng keyword search.
 
 ### 3.2 Hàm Classify (Few-shot prompting)
 Để model gemma4 (2B params) nhận diện chính xác loại dữ liệu, phải dùng few-shot prompting.
@@ -106,6 +112,7 @@ Thuật toán cắt văn bản thông minh bảo toàn tính toàn vẹn của l
 ### Pseudo-code Implementation
 ```rust
 pub struct Chunk {
+    pub id: String,                 // parent cần id để children tham chiếu (F-19.4)
     pub content: String,
     pub is_parent: bool,
     pub parent_id: Option<String>,
@@ -133,10 +140,10 @@ pub fn agentic_chunking(text: &str) -> Vec<Chunk> {
         } else {
             // Đạt giới hạn Parent -> Tạo cấu trúc Parent-Child
             let parent_id = uuid::Uuid::new_v4().to_string();
-            chunks.push(Chunk { content: current_parent.clone(), is_parent: true, parent_id: None });
+            chunks.push(Chunk { id: parent_id.clone(), content: current_parent.clone(), is_parent: true, parent_id: None });
             
             for child in &child_chunks {
-                chunks.push(Chunk { content: child.clone(), is_parent: false, parent_id: Some(parent_id.clone()) });
+                chunks.push(Chunk { id: uuid::Uuid::new_v4().to_string(), content: child.clone(), is_parent: false, parent_id: Some(parent_id.clone()) });
             }
             
             // Reset state

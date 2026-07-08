@@ -16,7 +16,7 @@ curl -fsSL https://mcp.example.com/setup | sh -s -- --token cfk_enroll_xxxx
 
 ✅ Co-Force connected.
    Workspace:  my-project (ws-a1b2c3)  ·  Server: mcp.example.com (healthy)
-   Configured: Claude Code (.mcp.json) · Cursor (.cursor/mcp.json)
+   Configured: Claude Code (~/.claude.json, scope local) · Cursor (~/.cursor/mcp.json)
    Team online: Agent-Alpha (reviewer)
    → Mở agent của bạn và bắt đầu. Agent sẽ tự check-in theo rules đã tiêm.
 ```
@@ -47,21 +47,26 @@ Lý do đổi enrollment token → agent token: token trong one-liner có thể 
 
 ## 3. Script `/setup` làm gì (idempotent, POSIX sh + biến thể PowerShell)
 
-1. **Detect môi trường:** git repo? (lấy remote URL → workspaceId hint) · client nào có mặt (`claude` binary, `.cursor/`, `.windsurf/`, `.vscode/`) · OS.
+1. **Detect môi trường:** git repo? (lấy remote URL → workspaceId hint) · client nào có mặt (binaries: `claude`, `codex`, `agy`, `cursor-agent`; dirs: `.cursor/`, `.windsurf/`, `.vscode/`) · OS.
 2. **Enroll** (§2) — nhận `agentToken` + `workspaceId`.
-3. **Ghi config cho từng client phát hiện được** (managed — có marker, chạy lại không duplicate; merge JSON nếu file đã tồn tại, không phá config MCP khác của user):
+3. **Ghi config cho từng client phát hiện được** — nguyên tắc chốt theo **F-18**: agent token là **per-máy** nên phải nằm trong config **user/machine-scope ngoài repo**, KHÔNG nằm trong file project được commit. (Lưu ý: env expansion `${VAR}` trong `.mcp.json` đọc biến môi trường của process client — không có cơ chế tự đọc file, nên "token trong `.co-force/token` + tham chiếu `${VAR}`" không hoạt động.)
 
-   | Client | File | Nội dung chính |
+   | Client | Cách cấu hình (machine-scope) | Ghi chú |
    | :--- | :--- | :--- |
-   | Claude Code | `.mcp.json` | `{"type":"http","url":"https://mcp.example.com/mcp","headers":{"Authorization":"Bearer ${CO_FORCE_TOKEN}"}}` + token vào `.co-force/token` (0600) và export qua `.mcp.json` env expansion |
-   | Cursor | `.cursor/mcp.json` | tương tự (Cursor hỗ trợ headers) |
-   | Windsurf | `~/.codeium/windsurf/mcp_config.json` | tương tự |
-   | VS Code Copilot | `.vscode/mcp.json` | tương tự |
+   | Claude Code | `claude mcp add -s local -t http co-force https://mcp.example.com/mcp --header "Authorization: Bearer <token>"` → ghi vào `~/.claude.json` (per-project-per-máy, ngoài repo) | Không đụng `.mcp.json` của repo |
+   | Codex CLI | `~/.codex/config.toml`: `[mcp_servers.co-force] url = "https://mcp.example.com/mcp"` + `bearer_token_env_var = "CO_FORCE_TOKEN"` — script thêm export vào shell profile (managed block) | HTTP + Bearer native; env var phải tồn tại (Plan 08 C2), fail → stdio shim `mcp-remote` |
+   | Antigravity CLI (`agy`) | `.agents/mcp_config.json` (per-workspace) hoặc `~/.gemini/config/mcp_config.json` (global), field `serverUrl` | Header auth cần verify lúc enroll (Plan 08 C3); fail → stdio shim |
+   | Cursor | merge vào `~/.cursor/mcp.json` (global) | Kèm headers Authorization |
+   | Windsurf | merge vào `~/.codeium/windsurf/mcp_config.json` (global) | tương tự |
+   | VS Code Copilot | `.vscode/mcp.json` dùng **inputs/secret prompt** hoặc fallback bên dưới | `.vscode/` thường được commit — không ghi token thẳng |
+   | CI / generic | ghi `.mcp.json` với token thẳng — **fallback duy nhất được ghi token vào project** | Bắt buộc qua bước 4 |
 
-4. **Token hygiene:** token ghi vào `.co-force/token` (0600); `.gitignore` được bổ sung `.co-force/` **trước khi** ghi token; nếu client không hỗ trợ env expansion → ghi thẳng nhưng script kiểm tra gitignore đã có hiệu lực (`git check-ignore`) — fail thì dừng và báo, không bao giờ để token có thể bị commit.
+   Danh sách CLI phát hiện được (claude/codex/agy/cursor-agent) được gửi kèm trong `/api/enroll` (`machineInfo.clis`) — server dùng để chọn placement L2 và gợi ý diversity policy (Plan 08 §4).
+
+4. **Token hygiene (chỉ áp cho fallback ghi token vào project):** `.gitignore` được bổ sung **trước khi** ghi file chứa token; script verify hiệu lực bằng `git check-ignore` — fail thì dừng và báo, không bao giờ để token có thể bị commit. `.co-force/` (agent.json, không chứa secret trong luồng chuẩn) vẫn luôn được gitignore.
 5. **Rule injection (Lớp 1):** ghi managed block vào `AGENTS.md`, `CLAUDE.md`, `.cursorrules` — template State-bound Instruction (URD §9.3) **đã cập nhật theo Quality Engine**: quy trình bắt buộc gồm check_in → recall → create_tasks → (recheck tự động) → chờ approve → lock → code → submit_verification → chờ review → rework nếu có findings. Kèm URL server + tên workspace.
 6. **Tạo `.co-force/`:** `agent.json` (serverUrl, workspaceId), thư mục cache.
-7. **Verify end-to-end:** gọi `tools/list` qua `/mcp` với token thật → in số tools + team đang online. Fail → in chẩn đoán cụ thể (DNS? 401? server degraded?) và exit non-zero.
+7. **Verify end-to-end:** gọi `tools/list` qua `/mcp` với token thật **qua đúng đường config vừa ghi** (xác nhận client thật sự gửi được header — F-18) → in số tools + team đang online. Fail → in chẩn đoán cụ thể (DNS? 401 = header không tới nơi? server degraded?) và exit non-zero; client không hỗ trợ custom header → in hướng dẫn thủ công thay vì để lại config chết.
 8. **In summary** (mẫu ở §1).
 
 **Không có bước nào cần sudo, không cài package, không phụ thuộc gì ngoài `curl` + `sh`** (Windows: `irm https://mcp.example.com/setup.ps1 | iex` với tham số tương đương).

@@ -22,7 +22,7 @@ Cơ sở lý luận (đã phản ánh trong AGENTS.md của chính repo này): L
 ### 2.2 Auto-staffing (liên kết Plan 03)
 Khi task tới gate cần role chưa có agent online đảm nhận:
 1. Server tìm agent online khác role phù hợp → gửi review request qua inbox.
-2. Không có → **spawn** agent mới với role đó qua **Lane 3 worker pool** — headless trên server, đọc code từ git worktree (architecture.md §5.3; provider registry, ưu tiên **provider/model KHÁC** với agent tác giả để tăng diversity phản biện).
+2. Không có → **spawn** agent mới với role đó qua **Lane 3 worker pool** — headless trên server, đọc code từ git worktree (architecture.md §5.3; provider registry **Plan 08**, ưu tiên **provider/model KHÁC** với agent tác giả để tăng diversity phản biện — với 3 subscription CLIs (Claude/Codex/agy) diversity picker phủ Anthropic ↔ OpenAI ↔ Google trước khi lặp cùng provider).
 3. Không spawn được → task đứng ở gate + banner dashboard + alert. **Không bao giờ tự bỏ qua gate.**
 
 ---
@@ -45,8 +45,19 @@ stateDiagram-v2
     code_review --> completed: đủ số approve<br/>theo quality policy
     completed --> [*]: store_memory + distill
     in_progress --> blocked: dependency fail
+    blocked --> in_progress: dependency resolved<br/>(task chặn hoàn thành / user gỡ)
     in_progress --> pending_handover: handover
+    pending_handover --> in_progress: agent mới nhận<br/>(L2/L3, giữ state_summary)
+    pending_handover --> approved: timeout không ai nhận<br/>→ về backlog, alert
+    awaiting_approval --> draft: user reject<br/>(kèm lý do → agent sửa spec)
+    draft --> cancelled: user/admin hủy
+    approved --> cancelled: user/admin hủy
+    in_progress --> cancelled: user/admin hủy<br/>(tự nhả locks)
+    blocked --> cancelled: user/admin hủy
+    cancelled --> [*]
 ```
+
+> **F-20:** `blocked`, `pending_handover` phải có đường ra (không có → task kẹt vĩnh viễn); `awaiting_approval` phải có đường reject; `cancelled` reachable từ mọi trạng thái chưa `completed` (chỉ user/admin kích hoạt — agent không tự hủy task; sơ đồ chỉ vẽ các cạnh chính). Hủy task đang `code_review`/`verification` cũng được phép qua dashboard.
 
 **Bất biến do server enforce (không phải hướng dẫn suông):**
 - `update_task(status=completed)` trực tiếp → lỗi `GATE_VIOLATION` kèm `recovery_action` (phải đi qua `submit_verification` → review).
@@ -80,7 +91,7 @@ CREATE INDEX idx_msg_inbox ON agent_messages(workspace_id, to_agent_id, delivere
 
 ### 4.2 Cơ chế delivery — 3 kênh phối hợp
 1. **Piggyback inbox (chủ lực):** MỌI tool response đều kèm `inbox: {unread: n, urgent: [...tóm tắt]}` — agent đang làm việc luôn thấy tin mới mà không cần tool riêng, được `protocol_next_step` hướng dẫn xử lý tin `requires_response` trước.
-2. **`co_force_wait_events(timeout_secs≤55, filters?)` (long-poll):** agent rảnh (vd reviewer được spawn để trực) block chờ; server trả ngay khi có message/gate event cho agent đó, hoặc `no_events` khi hết timeout → agent gọi lại. 55s < Cloudflare timeout 100s (Plan 06 §3.1). Đây là cách một agent "trực chiến" như thành viên team thật.
+2. **`co_force_wait_events(timeout_secs≤55, filters?)` (long-poll):** agent rảnh (vd reviewer được spawn để trực) block chờ; server trả ngay khi có message/gate event cho agent đó, hoặc `no_events` khi hết timeout → agent gọi lại. 55s < Cloudflare timeout 100s (Plan 06 §3.1). Đây là cách một agent "trực chiến" như thành viên team thật. **Lưu ý (F-24):** một số MCP client có timeout tool-call riêng ngắn hơn 55s → default `timeoutSecs = 25`, max 55; enrollment script chạy thử 1 lần `wait_events` để đo và in khuyến nghị nếu client cắt sớm. Mỗi vòng poll tốn 1 tool call trong context của agent — worker trực lâu nên được cấp token budget riêng (Plan 03 L3).
 3. **Check-in delivery:** tin chưa delivered trả đầy đủ khi agent check-in (phiên mới).
 
 ### 4.3 Tools
@@ -130,7 +141,14 @@ sequenceDiagram
   ]
 }
 ```
-Server validate: có ≥ 1 step `kind=test` với `exit_code=0` (theo policy); evidence gắn với `task_revision` hiện tại — sửa code sau khi submit → revision tăng → evidence cũ vô hiệu (chống khai man phổ biến nhất của LLM: "đã test rồi" từ lần trước).
+Server validate: có ≥ 1 step `kind=test` với `exit_code=0` (theo policy); evidence gắn với `task_revision` hiện tại — revision tăng → evidence cũ vô hiệu (chống khai man phổ biến nhất của LLM: "đã test rồi" từ lần trước).
+
+**Revision tracking — chỉ dựa trên sự kiện server QUAN SÁT ĐƯỢC (F-21).** Server không nhìn thấy filesystem client nên không thể "phát hiện file đổi"; revision tăng khi:
+1. Task quay lại `in_progress` (rework);
+2. Agent lock thêm/lock lại files của task **sau khi** đã có evidence;
+3. Có `submit_verification` mới hoặc `commit_sha` mới.
+
+Khi workspace có git remote + Worker Pool bật: server **fetch mirror và verify `commit_sha` tồn tại** ngay tại `submit_verification` — không thấy → `EVIDENCE_STALE {reason: "commit_not_found"}` (agent phải push trước, cũng là điều kiện để L3 reviewer đọc được đúng code). Không có remote: chấp nhận giới hạn tin cậy — hàng rào thật khi đó là reviewer **tự chạy lại test độc lập**, evidence chỉ là bằng chứng bổ trợ.
 
 ### 5.2 Bảng `reviews`
 `review_id, task_id, task_revision, reviewer_agent_id, verdict (approved|changes_requested), findings JSON, assist_checklist JSON, created_at`.
@@ -144,6 +162,8 @@ Server validate: có ≥ 1 step `kind=test` với `exit_code=0` (theo policy); e
 4. Kết quả lưu `critiques` + distill vào knowledge.
 
 ## 7. Server-side LLM Quality Services (dùng reasoner model — Plan 06 §5)
+
+> **Tùy chọn subscription (Plan 08 §5):** `reasoner_provider = "cli-worker"` — các service không cần latency thấp (distillation, consolidation, recheck nightly) route thành job L3 chạy trên CLI subscription thay vì gọi API reasoner. Spec Recheck/Review Assist interactive nên giữ reasoner API/Ollama (cần nhanh).
 
 | Service | Trigger | Việc làm |
 | :--- | :--- | :--- |
@@ -167,6 +187,8 @@ max_rework_cycles = 3
 definition_of_done = ["tests pass", "no clippy warnings", "docs updated"]  # inject vào review checklist
 ```
 
+**Validate lúc SET policy, không đợi runtime (F-22):** `reviewer_must_differ = "provider"` mà hệ có < 2 providers khả dụng (agents online + worker pool `[workers].providers`) → **từ chối set** kèm hướng dẫn (thêm provider vào worker pool, hoặc hạ về `"agent"`); dashboard cảnh báo ngay khi số provider khả dụng tụt xuống 1 (vd revoke máy Cursor cuối cùng). Không validate sớm thì mọi task sẽ kẹt ở `code_review` vĩnh viễn — đứng gate + alert đúng tinh thần N2 nhưng để user phát hiện deadlock cấu hình lúc runtime là không hợp lý.
+
 ## 9. Quality Metrics (dashboard — đo chất lượng, không đo tốc độ)
 
 - **Rework rate** = tasks có ≥1 rework / tổng — cao nghĩa là review đang bắt được lỗi (tốt) hoặc spec kém (xem cùng recheck-gap count)
@@ -179,7 +201,7 @@ definition_of_done = ["tests pass", "no clippy warnings", "docs updated"]  # inj
 1. Migrations: `agent_messages`, `reviews`, `critiques`, `verification_records`, `quality_policies`, `quality_scores` + repos (mockall).
 2. Task state machine mới: pure function `transition(task, action, policy) -> Result<TaskStatus, GateViolation>` — unit test đủ mọi cạnh (đây là logic quan trọng nhất, test trước tiên).
 3. Messaging: send/respond + inbox piggyback middleware (mọi tool response đi qua decorator gắn inbox) + `wait_events` (tokio watch/notify per agent, timeout 55s).
-4. Verification evidence validator + revision tracking (revision tăng khi lock/unlock ghi nhận file đổi sau submit).
+4. Verification evidence validator + revision tracking theo sự kiện server quan sát được (§5.1 — F-21) + verify `commit_sha` trong mirror khi có remote.
 5. Review workflow use cases + separation-of-duties checks + auto-staffing hook (gọi sang Plan 03 spawn).
 6. LLM services: recheck, review-assist, distillation, consolidation — mỗi service 1 struct nhận `Arc<dyn LlmProvider>` (mock cho unit test; prompt templates để trong `quality/prompts/` dạng file, có versioning).
 7. Critique fan-out + tổng hợp bất đồng.

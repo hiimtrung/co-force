@@ -3,7 +3,7 @@
 **Status:** Approved baseline — 2026-07-08 (v2, thay thế hoàn toàn bản phased-MVP cùng ngày)
 **Vai trò:** Master plan cho **một release duy nhất, đầy đủ tính năng, product-ready**. Không có MVP trung gian. Khi có xung đột với plan khác, file này thắng.
 
-*Tham chiếu:* `docs/architecture.md` (kiến trúc chốt), `docs/plans/01–07`, `docs/review_findings.md` (§6 — điều chỉnh định hướng)
+*Tham chiếu:* `docs/architecture.md` (kiến trúc chốt), `docs/plans/01–08` (08 = provider CLI integration subscription-first), `docs/review_findings.md` (§6 — điều chỉnh định hướng)
 
 ---
 
@@ -30,7 +30,7 @@
 3. **A2A hai chiều:** messaging + inbox + long-poll `wait_events`, spawn sub-agent, handover, auto-staffing vai trò thiếu.
 4. **Agentic RAG (Plan 04):** semantic memory/knowledge/skill, agentic chunking, embedding cache, re-embed queue (resilience, không phải degrade), memory consolidation nightly.
 5. **Server hạ tầng (Plan 06):** installer một lệnh, cloudflared tunnel, auth token, systemd + watchdog, backup/restore, health/alerting, dashboard ops.
-6. **Client onboarding (Plan 05):** enrollment one-liner từ dashboard, tự cấu hình Claude Code/Cursor/Windsurf/Copilot, rule injection.
+6. **Client onboarding (Plan 05):** enrollment one-liner từ dashboard, tự cấu hình Claude Code / **Codex CLI** / **Antigravity CLI (agy)** / Cursor / Windsurf / Copilot (spec per CLI: Plan 08), rule injection.
 7. **Dashboard web** (embedded, cùng port): agent status realtime, kanban, review queue, memory browser, quality metrics, quản trị token/enrollment.
 
 ### 2.2 MCP Tools (38 tools — bảng đầy đủ tại URD Appendix B + Plan 07 §5)
@@ -70,8 +70,8 @@ graph LR
 ```
 
 ### WS-A — Domain & Database (Plan 01) · ~1.5 tuần
-- Strong types, enums (thêm các status/bảng mới của Plan 07: `agent_messages`, `reviews`, `critiques`, `quality_policies`, `api_tokens`, `verification_records`)
-- Migrations đầy đủ (13 bảng), `memory_entries.embedding BLOB`, index cho hot paths (locks by ws+path, messages by target+undelivered, activities by ws+time)
+- Strong types, enums (thêm các status/bảng mới của Plan 07: `agent_messages`, `reviews`, `critiques`, `quality_policies`, `verification_records`)
+- Migrations cho **2 tầng DB** (F-17): `server.db` cấp server (`api_tokens`, `workspaces` registry, `audit_log` — auth tra trước khi biết workspace) + DB per-workspace (12 bảng nghiệp vụ), `memory_entries.embedding BLOB`, index cho hot paths (locks by ws+path, messages by target+undelivered, activities by ws+time)
 - Repository traits + Sqlite impls + integration tests in-memory
 - **DoD:** `cargo test` xanh; mọi bảng có repo + test CRUD; migration chạy idempotent.
 
@@ -100,7 +100,7 @@ graph LR
 - **DoD:** benchmark 10k entries recall < 50ms; kill Ollama giữa chừng → tool báo lỗi rõ, queue giữ nguyên, tự hồi phục khi Ollama restart; consolidation giảm ≥ 30% duplicate trong test corpus.
 
 ### WS-E — Active Orchestration (Plan 03) · ~1.5 tuần
-- Event bus; doc generator (AGENTS.md managed block, debounce); provider registry trong config (template lệnh, `max_spawn_depth`, budget flags); ProcessManager (spawn/reap/kill, log ra activity)
+- Event bus; doc generator (AGENTS.md managed block, debounce); provider registry trong config (**Plan 08** — spec verified cho claude/codex/agy/cursor-agent, template lệnh, `max_spawn_depth`, budget flags, auth probes); ProcessManager (spawn/reap/kill, log ra activity)
 - Handover flow; auto-staffing: quality policy thiếu reviewer → server spawn agent role reviewer
 - **DoD:** handover thật giữa 2 provider CLI; spawn có depth limit; kill từ dashboard hoạt động.
 
@@ -111,7 +111,7 @@ graph LR
 
 ### WS-G — Client Setup & Onboarding (Plan 05) · ~1 tuần
 - Endpoint `/setup` serve script enrollment (sh + ps1) templated URL; dashboard sinh one-liner kèm token
-- Script: detect project + IDE, ghi `.mcp.json`/`.cursor/mcp.json`/rules/`.co-force/`/gitignore, verify kết nối, in hướng dẫn 3 dòng
+- Script: detect project + IDE, ghi config **machine-scope** (`claude mcp add -s local` / `~/.cursor/mcp.json` — token per-máy không vào file project, F-18) + rules + `.co-force/` + gitignore, verify kết nối, in hướng dẫn 3 dòng
 - **DoD:** trên máy client trắng (chỉ có Cursor), từ paste one-liner đến agent check-in thành công **< 60 giây**; chạy lại idempotent.
 
 ### WS-H — Dashboard · ~2 tuần (song song sau WS-B)
@@ -140,7 +140,7 @@ Rủi ro tiến độ lớn nhất: WS-C (Quality Engine là phần chưa có ti
 
 | Sự cố | Hành vi CŨ (đã bỏ) | Hành vi 1.0 |
 | :--- | :--- | :--- |
-| Ollama down | Store không vector, recall keyword LIKE | Tool trả `SERVICE_UNAVAILABLE {component: "llm", retry_after}`; systemd watchdog restart Ollama; alert webhook; agent được hướng dẫn chờ/hỏi user |
+| Ollama down | Store không vector, recall keyword LIKE (âm thầm) | Per-tool (F-19): `store_memory` vẫn lưu nhưng response ghi rõ `index_status: "pending"` (dữ liệu không mất, minh bạch); `recall`/`classify`/`recheck` trả `SERVICE_UNAVAILABLE {component: "llm", retry_after}` — không có kết quả thay thế; systemd watchdog restart Ollama; alert webhook |
 | Model chưa pull | Bỏ qua classify | Installer đảm bảo pull xong mới hoàn tất; `/healthz` fail nếu thiếu model; server không nhận traffic khi `degraded` |
 | Vector thiếu (re-embed đang chạy) | Trả kết quả keyword âm thầm | Recall trả kèm `index_status: PARTIAL (n pending)` — agent và user biết chính xác độ tin cậy |
 | Tunnel/DNS lỗi | — | Client script verify kết nối lúc setup; server alert khi cloudflared unit fail |
