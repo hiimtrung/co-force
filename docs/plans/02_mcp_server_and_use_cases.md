@@ -1,27 +1,27 @@
-# Kế Hoạch Triển Khai Chi Tiết: 02 - MCP Server and Use Cases Layer
+# Detailed Implementation Plan: 02 - MCP Server and Use Cases Layer
 
 **Status:** Ready for Implementation
-**Target:** `crates/co-force-core/src/engine/` và `crates/co-force-mcp/`
+**Target:** `crates/co-force-core/src/engine/` and `crates/co-force-mcp/`
 
-> **⚠️ Cập nhật 2026-07-08 (xem `docs/review_findings.md` F-01):** `rmcp` hiện đã là **2.x stable** — không phải 0.16 như URD. Hai hệ quả cho plan này:
-> 1. Macro `#[rmcp::server]` **không tồn tại**. API đúng của rmcp 2.x: `#[tool_router]` trên `impl`, `#[tool(description = ...)]` trên từng method, params là struct derive `serde::Deserialize + schemars::JsonSchema` bọc trong `Parameters<T>`, và implement trait `ServerHandler` (dùng `#[tool_handler]`). Tham khảo examples trong repo `modelcontextprotocol/rust-sdk`.
-> 2. **SSE transport đã bị deprecate khỏi MCP spec** — thay bằng **Streamable HTTP** (feature `transport-streamable-http-server` + `transport-streamable-http-server-session` để bind session, phục vụ Implicit Session Binding qua header `Mcp-Session-Id`). Các đoạn code mẫu bên dưới mang tính minh họa cấu trúc, khi code phải theo API thật.
+> **⚠️ Update 2026-07-08 (see `docs/review_findings.md` F-01):** `rmcp` is now **2.x stable** — not 0.16 as in the URD. Two consequences for this plan:
+> 1. The `#[rmcp::server]` macro **does not exist**. The correct API for rmcp 2.x is: `#[tool_router]` on `impl`, `#[tool(description = ...)]` on each method, parameters are structs deriving `serde::Deserialize + schemars::JsonSchema` wrapped in `Parameters<T>`, and implementing the `ServerHandler` trait (using `#[tool_handler]`). Refer to examples in the `modelcontextprotocol/rust-sdk` repo.
+> 2. **SSE transport has been deprecated from the MCP spec** — replaced by **Streamable HTTP** (features `transport-streamable-http-server` + `transport-streamable-http-server-session` to bind sessions, serving Implicit Session Binding via the `Mcp-Session-Id` header). The sample code blocks below are for structural illustration only; the actual code must follow the real API.
 
-## 1. Context & Mục Tiêu
-Tầng này đóng vai trò xử lý logic nghiệp vụ thông qua các **Use Case Classes/Structs** (Clean Architecture) và bộc lộ (expose) các tools đó cho client AI Agents thông qua giao thức MCP (Model Context Protocol).
+## 1. Context & Objectives
+This layer is responsible for processing business logic via **Use Case Classes/Structs** (Clean Architecture) and exposing those tools to client AI Agents via the Model Context Protocol (MCP) protocol.
 
-*Tài liệu tham chiếu:*
-- `architecture.md` §6 (response envelope, error codes, catalog 39 tools)
+*Reference Documents:*
+- `architecture.md` §6 (response envelope, error codes, 39-tool catalog)
 - `URD.md` (Appendix B: MCP Tool Signatures)
 
 ---
 
-## 2. Thiết kế Use Case Engine
-**Vị trí:** `crates/co-force-core/src/engine/`
+## 2. Use Case Engine Design
+**Location:** `crates/co-force-core/src/engine/`
 
-Tất cả logic phải nằm trong core, không nằm trong file của MCP Server. Mỗi Use Case là một struct nhận `Arc<dyn Trait>` qua hàm `new`.
+All logic must reside in the core, not in the MCP Server files. Each Use Case is a struct that receives `Arc<dyn Trait>` via the `new` function.
 
-### 2.1 Ví dụ Mẫu: CheckInUseCase
+### 2.1 Pattern Example: CheckInUseCase
 ```rust
 use crate::engine::ports::{AgentRepository, ActivityRepository};
 use crate::types::*;
@@ -51,27 +51,27 @@ impl CheckInUseCase {
     }
 
     pub async fn execute(&self, req: CheckInRequest) -> anyhow::Result<CheckInResponse> {
-        // 1. Phân tích agent_id. Nếu có, tìm trong DB, nếu không tạo mới.
+        // 1. Analyze agent_id. If present, find in DB, otherwise create new.
         // 2. Upsert Agent status -> Idle/Working
         // 3. Log Activity: `ActivityType::CheckIn`
-        // 4. Lấy pending tasks trả về
+        // 4. Retrieve pending tasks and return them
         todo!()
     }
 }
 ```
 
-### 2.2 Các Use Cases Khác Cần Triển Khai
-- `LockFilesUseCase` (Đòi hỏi `LockRepository`)
-- `UpdateTaskUseCase` (Đòi hỏi `TaskRepository`, ghi Activity sau khi update)
-- `GetAgentContextUseCase` (Lấy dữ liệu từ Activity Repo & Context Repo)
-- `ShareContextUseCase` (Lưu vào Context Repo)
+### 2.2 Other Use Cases to Implement
+- `LockFilesUseCase` (Requires `LockRepository`)
+- `UpdateTaskUseCase` (Requires `TaskRepository`, records Activity after update)
+- `GetAgentContextUseCase` (Retrieves data from Activity Repo & Context Repo)
+- `ShareContextUseCase` (Saves into Context Repo)
 
 ---
 
-## 3. Thiết Kế MCP Server
-**Vị trí:** `crates/co-force-mcp/src/main.rs`
+## 3. MCP Server Design
+**Location:** `crates/co-force-mcp/src/main.rs`
 
-Dùng rmcp **2.x** (`#[tool_router]` + `#[tool]` + `ServerHandler` — xem banner đầu file). Code mẫu bên dưới giữ nguyên dạng minh họa cấu trúc cũ; khi code phải theo API thật.
+Use rmcp **2.x** (`#[tool_router]` + `#[tool]` + `ServerHandler` — see banner at top of file). The sample code below remains in the old structural illustration form; the actual code must follow the real API.
 
 ### 3.1 Server Struct
 ```rust
@@ -88,10 +88,10 @@ pub struct CoForceMcp {
 ```
 
 ### 3.2 Tool Handlers (Macro Implementation)
-Gắn mô tả chi tiết vào `description` vì đây là prompt để kích thích Agent gọi tool.
+Attach detailed descriptions in `description` as this is the prompt to encourage the Agent to call the tool.
 
 ```rust
-#[tool_router] // API thật rmcp 2.x — kèm #[tool_handler] impl ServerHandler; params bọc Parameters<T> (derive JsonSchema)
+#[tool_router] // Real API rmcp 2.x — includes #[tool_handler] impl ServerHandler; params wrapped in Parameters<T> (derive JsonSchema)
 impl CoForceMcp {
     #[tool(description = "MANDATORY: Call this first before any workspace action...")]
     async fn co_force_check_in(
@@ -112,7 +112,7 @@ impl CoForceMcp {
         agent_id: Option<String>,
         include_history: Option<bool>,
     ) -> serde_json::Value {
-        // Gọi GetAgentContextUseCase và parse về JSON
+        // Call GetAgentContextUseCase and parse to JSON
         todo!()
     }
 }
@@ -120,32 +120,32 @@ impl CoForceMcp {
 
 ---
 
-## 4. Cấu hình Transport
-MCP Server cần chạy ở 1 trong 2 chế độ (nhận tham số qua `clap` CLI arguments):
-1. **Stdio Transport** (`transport-io`): Giao tiếp qua stdin/stdout — dành cho single-agent hoặc client không nói HTTP.
-2. **Streamable HTTP Transport** (`transport-streamable-http-server`): HTTP server tại `127.0.0.1:3846/mcp` — **chế độ mặc định** (nhiều agent chia sẻ 1 server, có session binding qua `Mcp-Session-Id`). Đây là transport thay thế SSE đã bị deprecate.
+## 4. Transport Configuration
+The MCP Server needs to run in one of two modes (receiving parameters via `clap` CLI arguments):
+1. **Stdio Transport** (`transport-io`): Communicates via stdin/stdout — for single-agent or clients that do not speak HTTP.
+2. **Streamable HTTP Transport** (`transport-streamable-http-server`): HTTP server at `127.0.0.1:3846/mcp` — **default mode** (multiple agents share 1 server, session binding via `Mcp-Session-Id`). This is the replacement transport for the deprecated SSE.
 
 ```rust
-// Trong main.rs (minh họa — theo API rmcp 2.x: serve_server + StreamableHttpService)
+// In main.rs (illustration — according to rmcp 2.x API: serve_server + StreamableHttpService)
 match args.transport {
     Transport::Stdio => {
         let service = CoForceMcp::new(/* use cases */);
         rmcp::serve_server(service, rmcp::transport::io::stdio()).await?;
     }
     Transport::Http { addr } => {
-        // StreamableHttpService mount vào axum Router tại /mcp,
-        // cùng listener phục vụ luôn /dashboard (quyết định F-13)
+        // StreamableHttpService mounted into axum Router at /mcp,
+        // sharing the listener serving /dashboard (decision F-13)
     }
 }
 ```
 
 ---
 
-## 5. Trình tự Triển khai (Step-by-Step)
-1. Trong `co-force-core`, tạo folder `engine/` và lần lượt viết Unit Test (bằng `mockall`) cho các Use Case. 
-2. Triển khai logic thực tế cho các Use Case đến khi pass bài Unit Test. Đảm bảo MỌI Use Case đều có cơ chế log activity.
-3. Trong `co-force-mcp/Cargo.toml`, thêm thư viện `rmcp` và `tokio`.
-4. Viết `main.rs`, cài đặt `CoForceMcp` struct.
-5. Cài đặt các trait method bằng macro `#[tool]`. Đảm bảo copy chính xác Tool Signatures từ Appendix B của URD.
-6. Thêm bộ parser CLI args (`clap`) để chọn Transport mode (Streamable HTTP / Stdio).
-7. Khởi chạy thử: `cargo run -p co-force-mcp -- --transport stdio` và nhập JSON-RPC tay để kiểm thử vòng ngoài.
+## 5. Steps to Implement (Step-by-Step)
+1. In `co-force-core`, create the `engine/` folder and write Unit Tests (using `mockall`) for each Use Case.
+2. Implement actual logic for the Use Cases until they pass the Unit Tests. Ensure EVERY Use Case has an activity logging mechanism.
+3. In `co-force-mcp/Cargo.toml`, add `rmcp` and `tokio` libraries.
+4. Write `main.rs`, implementing the `CoForceMcp` struct.
+5. Implement trait methods using the `#[tool]` macro. Make sure to copy the exact Tool Signatures from Appendix B of the URD.
+6. Add the CLI args parser (`clap`) to select Transport mode (Streamable HTTP / Stdio).
+7. Test run locally: `cargo run -p co-force-mcp -- --transport stdio` and manually input JSON-RPC to test.

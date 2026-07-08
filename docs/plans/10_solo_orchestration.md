@@ -1,131 +1,137 @@
-# Kế Hoạch Triển Khai Chi Tiết: 10 - Solo Orchestration & Team Bootstrap
+# Detailed Implementation Plan: 10 - Solo Orchestration & Team Bootstrap
 
-**Status:** Ready for Implementation (bổ trợ WS-C/E, chốt 2026-07-08)
-**Target:** `crates/co-force-core/src/quality/team_planner.rs`, mở rộng `orchestration/`, template Plan 09
-**Kịch bản giải quyết:** công việc **dài, khó, nhiều task nhỏ** nhưng workspace chỉ có **1 agent duy nhất** (vd Antigravity trên 1 máy). Một agent ôm hết → context window phình → hallucinate, chất lượng sụp. Cần cơ chế để agent **tự biết mình đang solo**, tự đôn lên làm **PM**, ước lượng cần bao nhiêu dev/test/ba/qa, spawn subagents, và Co-Force làm **nguồn chân lý duy nhất + đồng bộ trạng thái** giữa các subagent — không race condition, chất lượng tối đa.
+**Status:** Ready for Implementation (supports WS-C/E, finalized 2026-07-08)
+**Target:** `crates/co-force-core/src/quality/team_planner.rs`, extending `orchestration/`, Plan 09 template
+**Target Scenario:** A **long, difficult job with many subtasks** in a workspace with **only a single agent** (e.g. Antigravity on one machine). One agent doing everything → context window bloat → hallucinations, quality collapse. Needs a mechanism where the agent **automatically detects it is solo**, promotes itself to **PM**, estimates the required developer/tester/ba/qa roles, spawns subagents, and Co-Force acts as the **single source of truth + state synchronizer** between subagents — preventing race conditions, maximizing quality.
 
 ---
 
-## 1. Nguyên lý: chống hallucinate bằng cách chia nhỏ context, không phải chia nhỏ chất lượng
+## 1. Principle: Prevent Hallucination by Splitting Context, Not Quality
 
-| Vấn đề khi 1 agent ôm việc dài | Cơ chế Co-Force |
+| Problem with 1 Agent doing a long job | Co-Force Mechanism |
 | :--- | :--- |
-| Context phình → quên spec, trộn lẫn tasks, tự tin sai | Mỗi subagent chỉ nhận **bootstrap package tối thiểu** (1 task + protocol pointer) — context hẹp, sạch |
-| Không ai kiểm tra chéo | Subagents là **identity riêng** → separation of duties vẫn enforce được (reviewer ≠ tác giả) dù cùng 1 provider |
-| Trạng thái nằm trong "trí nhớ" của agent → mất khi compact | Trạng thái nằm trong **DB server** (tasks, locks, activities, messages) — agent nào cũng đọc lại được, không bao giờ stale |
-| PM tự làm luôn cho nhanh → lại phình context | Playbook PM (Plan 09 §5): **PM không code khi team đang chạy** — chỉ điều phối, `protocol_next_step` liên tục nhắc |
+| Context bloat → forgets specs, mixes tasks, false confidence | Each subagent receives a **minimal bootstrap package** (1 task + protocol pointer) — keeping the context window narrow and clean |
+| No cross-checking | Subagents act as **distinct identities** → separation of duties remains enforced (reviewer ≠ author) even with the same provider |
+| State stored in agent's "memory" → lost during compaction | State resides in the **server database** (tasks, locks, activities, messages) — accessible by any agent, never stale |
+| PM directly coding to "be fast" → bloats context again | PM Playbook (Plan 09 §5): **PM does not code while the team runs** — coordinates only, prompted continuously by `protocol_next_step` |
 
-## 2. Phát hiện solo & kích hoạt (agent "tự biết" bằng cách nào)
+## 2. Solo Detection & Triggering (How the agent "knows")
 
-Ba tầng tín hiệu, không dựa vào việc agent tự giác:
+Three tiers of signaling, not relying on the agent's goodwill:
 
-1. **Rules (Lớp 1):** template Plan 09 §2 có quy tắc solo (đã bổ sung): *"Nếu check_in cho thấy bạn là agent duy nhất online và công việc trải trên >3 tasks → đăng ký role `pm` và gọi `co_force_plan_team` thay vì tự làm tất cả."*
-2. **Check-in response (Lớp 4 in-band):** kèm `team_context: {agents_online: 1, solo: true, providers: ["antigravity"]}` — sự thật từ server, không phải agent đoán.
-3. **Server chủ động (Lớp 3):** khi backlog `approved` của workspace vượt ngưỡng (`[a2a] solo_team_threshold_tasks = 3`) mà chỉ 1 agent online → mọi response cho agent đó gắn `protocol_next_step: "You are solo with N approved tasks. Register role pm and call co_force_plan_team before claiming tasks yourself."` Agent lờ đi và claim task thứ 2 khi task 1 chưa xong → cảnh báo mạnh hơn trong response (không chặn cứng — user có thể cố ý solo, config tắt được).
+1. **Rules (Layer 1):** The Plan 09 §2 rules template includes solo rules: *"If the check_in response indicates you are the only agent online and the backlog spreads across > 3 tasks → register the `pm` role and call `co_force_plan_team` instead of attempting everything yourself."*
+2. **Check-in response (Layer 4 in-band):** includes `team_context: {agents_online: 1, solo: true, providers: ["antigravity"]}` — ground truth from the server, not guessed by the agent.
+3. **Active Server Nudge (Layer 3):** When the approved backlog of the workspace exceeds a threshold (`[a2a] solo_team_threshold_tasks = 3`) and only 1 agent is online → all responses to that agent are appended with `protocol_next_step: "You are solo with N approved tasks. Register role pm and call co_force_plan_team before claiming tasks yourself."` If the agent ignores this and claims a second task while task 1 is in progress → stronger warnings are returned in the response envelope (not hard blocked — the user can override, configuration option to disable).
 
-## 3. Tool mới: `co_force_plan_team` (tool #39, nhóm Messaging/A2A)
+## 3. New Tool: `co_force_plan_team` (tool #39, Messaging/A2A group)
 
-Input: `{scope?: taskIds[] | "backlog"}`. Server (reasoner + heuristic) phân tích backlog approved và trả về **staffing estimate có căn cứ**:
+Input: `{scope?: taskIds[] | "backlog"}`. The server (reasoner + heuristics) analyzes the approved backlog and returns a **reasoned staffing estimate**:
 
 ```json
 {
   "analysis": {
-    "tasks": 12, "parallel_lanes": 3,
+    "tasks": 12,
+    "parallel_lanes": 3,
     "lane_clusters": [
-      {"area": "api/", "tasks": 5}, {"area": "web/", "tasks": 4}, {"area": "infra/", "tasks": 3}
+      {"area": "api/", "tasks": 5},
+      {"area": "web/", "tasks": 4},
+      {"area": "infra/", "tasks": 3}
     ],
-    "spec_gap_score": "low",          // từ recheck history → có cần BA không
+    "spec_gap_score": "low",          // from recheck history → indicates if a BA is needed
     "machine_capacity": {"max_agents_per_machine": 3, "provider": "antigravity"}
   },
   "recommended_team": [
-    {"role": "developer", "count": 2, "rationale": "3 lanes nhưng máy cap 3 agents tổng"},
-    {"role": "reviewer",  "count": 1, "rationale": "bắt buộc — reviews_required=1, phải khác identity tác giả"},
-    {"role": "qa",        "count": 0, "rationale": "reviewer kiêm QA khi team ≤ 4 (policy default)"},
-    {"role": "ba",        "count": 0, "rationale": "spec_gap_score=low; recheck server đảm nhiệm"}
+    {"role": "developer", "count": 2, "rationale": "3 lanes but machine capacity is 3 agents max"},
+    {"role": "reviewer",  "count": 1, "rationale": "mandatory — reviews_required=1, must differ from author identity"},
+    {"role": "qa",        "count": 0, "rationale": "reviewer acts as QA when team size ≤ 4 (default policy)"},
+    {"role": "ba",        "count": 0, "rationale": "spec_gap_score=low; server recheck handles validation"}
   ],
-  "spawn_plan": [ {"role": "developer", "taskIds": ["t1","t2"], "directive_ready": true}, ... ],
+  "spawn_plan": [
+    {"role": "developer", "taskIds": ["t1","t2"], "directive_ready": true},
+    ...
+  ],
   "protocol_next_step": "Confirm with the user, then call co_force_spawn_agent for each member. You are PM: do not claim coding tasks while the team runs."
 }
 ```
 
-**Heuristic nền (chạy được không cần reasoner, reasoner tinh chỉnh):**
-- `parallel_lanes` = số cụm task có **lock set rời nhau** (phân cụm theo `locked_files`/`avoidFiles` dự kiến + dependency graph) — đây chính là mức song song an toàn tối đa.
-- Số dev = min(parallel_lanes, `max_agents_per_machine` − 1 reviewer − 1 PM đang chiếm slot nhẹ).
-- Reviewer ≥ 1 luôn luôn (identity khác); QA tách riêng khi team > 4 hoặc policy `required_evidence_kinds` nhiều; BA chỉ khi recheck liên tục trả gaps (spec_gap_score cao).
-- Ước lượng đều phải **trình user xác nhận** trước khi spawn (dòng approve trên dashboard hoặc PM hỏi trực tiếp) — spawn đốt tài nguyên máy + subscription.
+**Heuristic Engine (runs locally without LLM, reasoner refines):**
+- `parallel_lanes` = number of task clusters with **disjoint lock sets** (clustered by expected `locked_files`/`avoidFiles` + dependency graph) — this is the maximum safe level of concurrency.
+- Number of developers = min(parallel_lanes, `max_agents_per_machine` − 1 reviewer − 1 PM slot).
+- Reviewers ≥ 1 always (different identity); QA is separated only when the team size > 4 or policy `required_evidence_kinds` has many items; BA only when continuous rechecks return gaps (high spec_gap_score).
+- Estimates must be **presented to the user for approval** before spawning (approval button on the dashboard or directly requested by PM) — spawning consumes machine resources + subscription tokens.
 
-## 4. PM quản lý subagents — vòng đời đầy đủ
+## 4. PM Subagent Management — Full Lifecycle
 
 ```mermaid
 sequenceDiagram
     autonumber
     participant U as 👤 User
-    participant PM as 🤖 Agent gốc (agy, role=pm)
+    participant PM as 🤖 Original Agent (agy, role=pm)
     participant Srv as ⚙️ Co-Force
     participant D1 as 🤖 Sub Dev-1 (agy -p)
     participant R as 🤖 Sub Reviewer (agy -p)
 
     PM->>Srv: check_in → team_context{solo: true}
-    PM->>Srv: create_tasks(12 tasks) → recheck → user approve
+    PM->>Srv: create_tasks(12 tasks) → recheck → user approves
     PM->>Srv: register_role(pm) + plan_team()
     Srv-->>PM: recommended_team (2 dev + 1 reviewer) + spawn_plan
-    PM->>U: trình estimate → user OK
+    PM->>U: presents estimate → user approves
     PM->>Srv: spawn_agent(role=developer, taskIds=[t1,t2]) ×2 + spawn_agent(role=reviewer)
     Srv-->>PM: spawn_directives (L2 — bootstrap prompt + scoped token + cwd)
-    PM->>PM: chạy directives bằng shell tool (agy -p ... &)
-    D1->>Srv: check_in(role=developer) → claim t1 → lock_files → code
+    PM->>PM: executes directives via shell tool (agy -p ... &)
+    D1->>Srv: check_in(role=developer) → claims t1 → lock_files → codes
     R->>Srv: check_in(role=reviewer) → wait_events loop
-    PM->>Srv: wait_events loop (giám sát)
+    PM->>Srv: wait_events loop (monitoring)
     Srv-->>PM: inbox: Dev-1 submit_verification, task t1 → code_review
     Srv-->>R: review_request(t1) → R submit_review(findings)
-    Srv-->>PM: inbox: t3 không ai claim 15' / Dev-2 im lặng 10'
-    PM->>PM: kill PID Dev-2 (server đã reclaim locks sau grace) → respawn directive
-    Srv-->>PM: pulse: backlog=0, gates clear → PM tổng kết, store_memory, báo user
+    Srv-->>PM: inbox: t3 unclaimed for 15' / Dev-2 silent for 10'
+    PM->>PM: kills PID of Dev-2 (server reclaimed locks after grace period) → respawns directive
+    Srv-->>PM: pulse: backlog=0, gates clear → PM summarizes, store_memory, reports to user
 ```
 
-**Trách nhiệm tách bạch — ai làm gì:**
+**Clear Separation of Responsibilities:**
 
-| Việc | Server (nguồn chân lý) | PM (điều phối) |
+| Action | Server (Ground Truth) | PM (Coordinator) |
 | :--- | :--- | :--- |
-| Phân việc không giẫm chân | Lock claims UNIQUE(ws,path) — atomic trong DB; task claim atomic (1 assignee) | Giao taskIds theo lane khi spawn; dùng `delegate_task(avoidFiles)` |
-| Thứ tự thực hiện | Dependency giữa tasks (prerequisites) — task chưa đủ deps không claim được | Sắp lane, quyết định ưu tiên |
-| Phát hiện subagent chết/kẹt | Session drop → grace 2' → reclaim locks + task về backlog; **stall detector**: task `in_progress` không có activity > `stall_timeout` (15') → inbox cho PM | Kill process (PID nằm trong spawn record), respawn hoặc tự làm nốt |
-| Chất lượng | Gates y nguyên (verification evidence + cross review giữa các identity) — **solo không hạ chuẩn** | Không tự review task mình giao? Được — PM không phải tác giả code; nhưng PM không review task chính PM code |
-| Approve của user | `awaiting_approval` vẫn cần user (dashboard) | PM gom câu hỏi/quyết định trình user 1 lần, không để N subagent hỏi user N lần |
+| Conflict-free allocation | Lock claims UNIQUE(ws,path) — atomic in DB; task claim atomic (1 assignee) | Assigns taskIds along lanes when spawning; uses `delegate_task(avoidFiles)` |
+| Execution order | Task dependencies (prerequisites) — tasks cannot be claimed until prerequisites are met | Organizes lanes, decides priority |
+| Detect dead/stuck subagents | Session drops → 2 min grace period → reclaim locks + tasks back to backlog; **stall detector**: task `in_progress` without activity for > `stall_timeout` (15 min) → logs alert to PM inbox | Kills process (PID captured in spawn record), respawns or takes over manually |
+| Quality Gates | Gates are identical (verification evidence + cross-review between identities) — **solo does not degrade standards** | Cannot self-review assigned tasks (enforced — PM is not the author; PM cannot review coding tasks written by themselves) |
+| User Approval | `awaiting_approval` still requires the user (dashboard) | PM aggregates questions/decisions to present to the user once, preventing N subagents from asking the user N times |
 
-## 5. Race condition trên MỘT máy — vấn đề thật sự và lời giải
+## 5. Concurrency on a SINGLE Machine — Challenges & Solutions
 
-Locks logic của Co-Force chặn 2 agent *nhận việc* trùng file, nhưng nhiều subagent trên **cùng working tree** vẫn đụng nhau ở tầng vật lý: build artifacts, formatter chạy toàn repo, `git add -A` vơ cả thay đổi của người khác. Chốt 2 mức:
+Co-Force's logical locks prevent two agents from *claiming* the same file, but multiple subagents on the **same working tree** still clash at the filesystem layer: build artifacts, formatters running repository-wide, `git add -A` grabbing changes from other lanes. Resolved at two levels:
 
-1. **Mặc định (`use_local_worktrees = false`):** cùng working tree, chỉ an toàn khi lock sets rời nhau **và** rules cấm lệnh toàn-repo: bootstrap prompt của subagent ghi rõ *"chỉ đụng files đã lock; commit bằng đường dẫn tường minh (`git add <files>`), không bao giờ `git add -A`/`git commit -a`; không chạy formatter/codemod toàn repo"*. Đủ tốt cho 2–3 subagents lanes rời.
-2. **Chế độ song song nặng (`use_local_worktrees = true`):** spawn_directive đặt `cwd` = **git worktree riêng** `.co-force/worktrees/{taskId}` trên branch `co-force/{taskId}` (đúng mô hình L3 nhưng trên máy client). Cô lập tuyệt đối; merge qua branch + gate code_review trước khi vào main. Trade-off: cần git, tốn disk, PM/user merge cuối — bật cho dự án lớn.
+1. **Default (`use_local_worktrees = false`):** Shared working tree, safe only when lock sets are disjoint **and** rules prohibit repo-wide commands: the subagent's bootstrap prompt explicitly states *"only modify files you have locked; commit changes using explicit paths (`git add <files>`), never `git add -A` or `git commit -a`; do not run formatter/codemod scripts repository-wide"*. Sufficient for 2-3 subagents on disjoint lanes.
+2. **Heavy Concurrency (`use_local_worktrees = true`):** The spawn_directive sets `cwd` to a **private git worktree** `.co-force/worktrees/{taskId}` on a dedicated branch `co-force/{taskId}` (matching L3 model but on the client machine). Absolute isolation; merged via branch + gate code_review before entering main. Trade-off: requires git, consumes disk space, PM/user merges at the end — enabled for large projects.
 
-Cả hai mức: **nguồn chân lý code = git**, nguồn chân lý trạng thái = **DB server** — subagent không bao giờ "hỏi nhau trực tiếp"; mọi giao tiếp qua `send_message`/inbox (có audit, có correlation) nên không có kênh ngầm để lệch trạng thái.
+For both levels: **source of truth for code = git**, source of truth for state = **DB server** — subagents never "communicate directly"; all messaging is routed via `send_message`/inbox (audited, correlated), ensuring no out-of-band state drifts.
 
-## 6. Solo + 1 provider: chất lượng giữ bằng gì? (liên đới F-22)
+## 6. Solo + 1 Provider: How is Quality Maintained? (related to F-22)
 
-- `reviewer_must_differ`: workspace 1 provider → policy validator (Plan 07 §8) tự chốt mức `"agent"` — review chéo giữa các **identity** khác nhau (context sạch riêng, không nhiễm bias "tôi vừa viết đoạn này"). Đây vẫn là nâng cấp lớn so với tự-review: reviewer đọc code lạnh, chạy test độc lập.
-- **Diversity mô hình đến từ server:** recheck/review-assist chạy trên reasoner (Ollama `qwen3` hoặc cloud) — khác model với agy → góc nhìn thứ hai thật sự.
-- Khuyến nghị trong `plan_team.analysis`: nếu server có Worker Pool bật với provider khác (Plan 08) → đề xuất đặt reviewer ở **L3 provider khác** thay vì subagent local cùng provider (diversity cao hơn, không tốn RAM máy dev).
+- `reviewer_must_differ`: For single-provider workspaces, the policy validator (Plan 07 §8) automatically pins the check to `"agent"` — cross-reviews between **different identities** (private context windows, no bias from "I just wrote this block"). This is a massive upgrade over self-reviews: the reviewer reads code fresh and runs tests independently.
+- **Model Diversity from the Server:** Rechecks/review assistance run on the reasoner (Ollama `qwen3` or cloud) — distinct from the local `agy` model, providing a true second opinion.
+- Recommendation in `plan_team.analysis`: If the server has a Worker Pool enabled with a different provider (Plan 08) → suggests placing the reviewer on an **L3 worker of a different provider** instead of a local subagent of the same provider (higher diversity, zero local RAM consumption).
 
-## 7. Config mới (`server.toml [a2a]` — bổ sung Plan 06 §5)
+## 7. New Configuration (`server.toml [a2a]` — appends to Plan 06 §5)
 
 ```toml
 [a2a]
-solo_team_threshold_tasks = 3      # backlog approved > N mà solo → protocol_next_step gợi ý plan_team
-max_agents_per_machine = 3         # trần subagent L2 per máy (RAM/CPU + rate limit subscription)
-stall_timeout_secs = 900           # in_progress không activity → báo PM
-use_local_worktrees = false        # true → spawn L2 vào git worktree riêng (§5.2)
+solo_team_threshold_tasks = 3      # approved backlog > N with only 1 online agent → protocol_next_step suggests plan_team
+max_agents_per_machine = 3         # max limit of L2 subagents per machine (RAM/CPU + subscription rate limit)
+stall_timeout_secs = 900           # task in_progress without activity → alerts PM
+use_local_worktrees = false        # true → spawns L2 into separate git worktree (§5.2)
 ```
 
-`max_spawn_depth = 1` giữ nguyên: subagent KHÔNG được spawn tiếp (chống nổ đệ quy); cần thêm người → nhắn PM qua inbox, PM quyết.
+`max_spawn_depth = 1` remains: subagents CANNOT spawn sub-subagents (prevents spawning explosions); if more resources are needed → request PM via inbox, PM decides.
 
-## 8. Trình tự Triển khai (Step-by-Step)
+## 8. Steps to Implement (Step-by-Step)
 
-1. `team_planner.rs`: heuristic phân cụm lanes từ locked_files/prerequisites (pure function, unit test với backlog mẫu) + reasoner refinement (mock LLM).
-2. Tool `co_force_plan_team` (#39) + `team_context`/`solo` trong check_in response + solo nudge trong `protocol_next_step` (threshold config).
-3. Mở rộng `spawn_agent` L2: nhận `taskIds[]`, sinh bootstrap prompt hẹp (1–2 tasks + quy tắc git tường minh §5.1), ghi spawn record (PID do PM báo lại qua `update`); `use_local_worktrees` → directive kèm lệnh tạo worktree.
-4. Stall detector daemon (activity gap > threshold → inbox PM) + reclaim đã có sẵn (architecture §9).
-5. Playbook PM (Plan 09 §5) + rules template: quy tắc solo + quy tắc "PM không code khi team chạy".
-6. Policy validator: solo/1-provider → `reviewer_must_differ="agent"` + gợi ý L3 provider khác nếu worker pool bật.
-7. E2E nghiệm thu: workspace trắng + 1 agent agy + backlog 8 tasks 2 lanes → agent tự plan_team → spawn 2 dev + 1 reviewer → toàn bộ tasks qua đủ gates, locks không conflict, `git log` không lẫn commit chéo lane; kill 1 subagent giữa chừng → PM được báo, respawn, hoàn thành.
+1. `team_planner.rs`: implement heuristic clustering of lanes based on expected locked_files and prerequisites (pure function, unit-tested against sample backlogs) + reasoner refinement (mock LLM).
+2. Implement `co_force_plan_team` (#39) tool + include `team_context`/`solo` in the check_in response + return solo nudge in `protocol_next_step` based on config threshold.
+3. Expand `spawn_agent` for L2: accepts `taskIds[]`, generates a narrow bootstrap prompt (1-2 tasks + explicit git rules §5.1), records the spawn (PID reported back by PM via `update`); if `use_local_worktrees` is true → directive includes commands to create the git worktree.
+4. Set up the stall detector daemon (activity gap > threshold → alerts PM) + leverage existing reclaim daemon (architecture §9).
+5. Implement PM Playbook (Plan 09 §5) + rules template: includes solo rules + "PM does not code while the team runs" rule.
+6. Configure the policy validator: solo/1-provider → pins `reviewer_must_differ="agent"` + suggests different L3 provider if the worker pool is enabled.
+7. E2E Acceptance: blank workspace + 1 agy agent + backlog of 8 tasks on 2 lanes → agent plans team → spawns 2 dev + 1 reviewer → all tasks pass gates, locks do not conflict, `git log` shows clean commits without cross-lane pollution; kill 1 subagent mid-way → PM is alerted, respawns it, completes execution.

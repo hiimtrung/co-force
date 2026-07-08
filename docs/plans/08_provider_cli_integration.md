@@ -1,83 +1,83 @@
-# Kế Hoạch Triển Khai Chi Tiết: 08 - Provider CLI Integration (Subscription-first)
+# Detailed Implementation Plan: 08 - Provider CLI Integration (Subscription-first)
 
-**Status:** Ready for Implementation (bổ trợ WS-E, WS-F, WS-G — chốt 2026-07-08)
-**Target:** `crates/co-force-core/src/orchestration/providers.rs`, config `[providers]`, templates trong Plan 05/06
-**Nguồn nghiên cứu:** deep research 2026-07-08 (docs chính thức OpenAI/Google) + đối chiếu kiến trúc provider của **Tutti** (`ref/tutti` — Apache-2.0, dự án shared-workspace đa agent chạy trên subscription sẵn có)
+**Status:** Ready for Implementation (supports WS-E, WS-F, WS-G — finalized 2026-07-08)
+**Target:** `crates/co-force-core/src/orchestration/providers.rs`, `[providers]` configuration block, templates in Plan 05/06
+**Research Source:** Deep research 2026-07-08 (official OpenAI/Google documentation) + comparison against **Tutti's** provider architecture (`ref/tutti` — Apache-2.0, multi-agent shared workspace project running on existing user subscriptions)
 
-## 1. Context & Nguyên tắc
+## 1. Context & Principles
 
-Tài liệu trước đây chỉ nhắc Claude Code CLI (và "antigravity-cli" phỏng đoán). Thực tế user có **nhiều subscription agent** song song — Claude (Anthropic), Codex (OpenAI/ChatGPT), Antigravity (Google) — và giá trị cốt lõi của Co-Force (review chéo, critique đa mô hình) chỉ phát huy tối đa khi **các provider khác nhau thật sự** tham gia cùng workspace.
+Previous documentation only mentioned Claude Code CLI (and "antigravity-cli" by extrapolation). In reality, users have **multiple parallel agent subscriptions** — Claude (Anthropic), Codex (OpenAI/ChatGPT), Antigravity (Google) — and the core value of Co-Force (cross-reviews, multi-model critiques) is only fully realized when **genuinely diverse providers** collaborate in the same workspace.
 
-| # | Nguyên tắc | Hệ quả |
+| # | Principle | Consequence |
 | :- | :--- | :--- |
-| P1 | **Subscription-first** | Agent CLIs chạy bằng subscription user đã trả (login OAuth/device-flow), KHÔNG đốt API key cho công việc code. API key chỉ là fallback tùy chọn per-provider. |
-| P2 | **Registry khai báo, không hardcode** (tái khẳng định F-05) | Mọi spec provider (binary, flags, MCP config, auth markers) nằm trong config + bảng registry mặc định — thêm provider mới không sửa core Rust. Mô hình học từ Tutti `ProviderSpec` (registry.go). |
-| P3 | **Verify lúc setup, không tin docs** | CLI flags trôi nhanh (Gemini CLI đã bị Google shutdown 6/2026, thay bằng `agy`). Installer/enrollment smoke-test từng CLI: binary có, login còn hạn, MCP header đi tới nơi. |
-| P4 | **Diversity là tính năng, không phải tùy chọn** | ≥ 2 provider trong hệ → `reviewer_must_differ = "provider"` khả thi thực (gỡ deadlock F-22); critique fan-out Claude ↔ GPT ↔ Gemini đúng như thiết kế Plan 07 §6. |
+| P1 | **Subscription-first** | Agent CLIs run on subscriptions the user has already paid for (OAuth/device-flow login), NOT burning API keys for coding work. API keys are strictly optional per-provider fallbacks. |
+| P2 | **Declared Registry, Not Hardcoded** (reaffirming F-05) | All provider specs (binary name, flags, MCP configs, auth markers) live in configuration + default registry tables — adding new providers requires no modifications to Rust core. Model learned from Tutti's `ProviderSpec` (`registry.go`). |
+| P3 | **Verify at Setup, Do Not Trust Docs** | CLI flags evolve rapidly (the Gemini CLI was shutdown by Google in June 2026, replaced by `agy`). The installer/enrollment script smoke-tests each CLI: binary must be present, login must be valid, and the MCP header must reach the server. |
+| P4 | **Diversity is a Feature, Not an Option** | Having ≥ 2 providers in the system makes `reviewer_must_differ = "provider"` genuinely feasible (resolving the gate deadlock F-22); critique fan-outs between Claude ↔ GPT ↔ Gemini behave exactly as designed in Plan 07 §6. |
 
-## 2. Provider Registry — schema config (hiện thực hóa F-05)
+## 2. Provider Registry — Configuration Schema (implements F-05)
 
 ```toml
-# server.toml — mỗi provider một block; bảng mặc định built-in, block này để override/thêm
+# server.toml — one block per provider; default table is built-in, this block overrides/extends
 [providers.claude-code]
 binary_names        = ["claude"]
 headless_command    = ["claude", "-p", "{prompt}"]          # L2/L3 spawn template
-auto_approve_flags  = ["--permission-mode", "acceptEdits"]   # L2 (máy dev — không bypass hết)
-sandbox_bypass_flags = ["--dangerously-skip-permissions"]    # CHỈ L3 (worktree sandbox trên server)
+auto_approve_flags  = ["--permission-mode", "acceptEdits"]   # L2 (developer machine — does not bypass all approvals)
+sandbox_bypass_flags = ["--dangerously-skip-permissions"]    # L3 ONLY (worktree sandbox on the server)
 resume_flags        = ["--resume", "{session_id}"]
-mcp_config_kind     = "claude-json"        # cách ghi MCP config cho client này (Plan 05 §3)
+mcp_config_kind     = "claude-json"        # method to write MCP config for this client (Plan 05 §3)
 auth_marker_paths   = ["~/.claude.json", "~/.claude/auth.json"]
 auth_status_command = ["claude", "auth", "status"]
-login_hint          = "claude login (subscription) · claude setup-token (headless, token dài hạn)"
+login_hint          = "claude login (subscription) · claude setup-token (headless, long-term token)"
 rules_files         = ["AGENTS.md", "CLAUDE.md"]
 placements          = ["L1", "L2", "L3"]
 ```
 
-Trường bắt buộc: `binary_names`, `headless_command`, `mcp_config_kind`, `auth_marker_paths`, `placements`. ProcessManager (Plan 03) chỉ đọc registry — không còn `match provider` trong Rust.
+Required fields: `binary_names`, `headless_command`, `mcp_config_kind`, `auth_marker_paths`, `placements`. The `ProcessManager` (Plan 03) only reads the registry — no more `match provider` blocks in the Rust code.
 
-## 3. Bảng spec 3 providers chính (verified 2026-07-08)
+## 3. Specifications for the 3 Main Providers (verified 2026-07-08)
 
 | | **Claude Code** | **Codex CLI** | **Antigravity CLI (`agy`)** |
 | :--- | :--- | :--- | :--- |
-| Hãng / subscription | Anthropic — Claude Pro/Max | OpenAI — ChatGPT Plus/Pro | Google — tài khoản Google |
-| Binary | `claude` | `codex` | `agy` (kế nhiệm Gemini CLI — Gemini CLI shutdown 2026-06-18) |
-| Headless (L2/L3) | `claude -p "<prompt>"` | `codex exec --json "<prompt>"` | `agy -p "<prompt>"` (+ `--print-timeout` cho job dài) |
-| Auto-approve | `--permission-mode acceptEdits` (L2) / `--dangerously-skip-permissions` (L3) | `--full-auto`; xem ⚠️ C1 | `--dangerously-skip-permissions` |
+| Vendor / Subscription | Anthropic — Claude Pro/Max | OpenAI — ChatGPT Plus/Pro | Google — Google Account |
+| Binary | `claude` | `codex` | `agy` (Gemini CLI successor — Gemini CLI shutdown 2026-06-18) |
+| Headless Command (L2/L3) | `claude -p "<prompt>"` | `codex exec --json "<prompt>"` | `agy -p "<prompt>"` (+ `--print-timeout` for long jobs) |
+| Auto-approve Flags | `--permission-mode acceptEdits` (L2) / `--dangerously-skip-permissions` (L3) | `--full-auto`; see ⚠️ C1 | `--dangerously-skip-permissions` |
 | Resume/handover | `--resume <sessionId>` | `codex exec resume` | `-c` / `--conversation <ID>` |
-| MCP config (co-force server) | `claude mcp add -s local -t http co-force <url> --header "Authorization: Bearer …"` → `~/.claude.json` (machine-scope, F-18 ✓) | `~/.codex/config.toml`: `[mcp_servers.co-force] url = "…" bearer_token_env_var = "CO_FORCE_TOKEN"` — **hỗ trợ streamable HTTP + Bearer native** | `.agents/mcp_config.json` (per-workspace) hoặc `~/.gemini/config/mcp_config.json` (global), field `serverUrl`; header auth **cần verify lúc enroll** (⚠️ C3) |
-| Auth markers (health probe) | `~/.claude.json`, `~/.claude/auth.json` | `~/.codex/auth.json` | System keyring (macOS Keychain / libsecret) — probe bằng auth status, không phải file |
-| Login headless (server L3) | `claude setup-token` | `codex login` (browser — SSH port-forward) hoặc `OPENAI_API_KEY` fallback | Google OAuth SSH flow: CLI in URL + one-time code, hoàn tất trên browser máy khác; `ANTIGRAVITY_API_KEY` fallback |
-| Rules file agent tự đọc | `AGENTS.md`, `CLAUDE.md` | `AGENTS.md` (native) | `AGENTS.md` (root, prepend mọi prompt) + skills `.agents/skills/` |
+| MCP Config (co-force server) | `claude mcp add -s local -t http co-force <url> --header "Authorization: Bearer …"` → `~/.claude.json` (machine-scope, F-18 ✓) | `~/.codex/config.toml`: `[mcp_servers.co-force] url = "…" bearer_token_env_var = "CO_FORCE_TOKEN"` — **supports native HTTP + Bearer** | `.agents/mcp_config.json` (per-workspace) or `~/.gemini/config/mcp_config.json` (global), field `serverUrl`; header auth **must be verified during enrollment** (⚠️ C3) |
+| Auth Markers (health probe) | `~/.claude.json`, `~/.claude/auth.json` | `~/.codex/auth.json` | System keyring (macOS Keychain / libsecret) — probed via auth status, not a file |
+| Headless Login (server L3) | `claude setup-token` | `codex login` (browser — SSH port-forward) or `OPENAI_API_KEY` fallback | Google OAuth SSH flow: CLI prints URL + one-time code, completed in browser on another machine; `ANTIGRAVITY_API_KEY` fallback |
+| Rules File Read natively | `AGENTS.md`, `CLAUDE.md` | `AGENTS.md` (native) | `AGENTS.md` (root, prepended to every prompt) + skills under `.agents/skills/` |
 | Placements | L1 · L2 · L3 | L1 · L2 · L3 | L1 · L2 · L3 |
 
-Provider phụ (registry có sẵn spec, tắt mặc định): **Cursor CLI** (`cursor-agent`, MCP `~/.cursor/mcp.json`, login subscription Cursor). Thêm provider mới = thêm block config (P2).
+Optional Provider (spec exists in registry, disabled by default): **Cursor CLI** (`cursor-agent`, MCP `~/.cursor/mcp.json`, login via Cursor subscription). Adding a new provider is as simple as adding a new config block (P2).
 
-### ⚠️ Caveats đã xác minh (phải xử lý trong code, không được lờ)
+### ⚠️ Verified Caveats (Must be handled in code, do not ignore)
 
-- **C1 — Codex `exec` + MCP approvals:** issue openai/codex#24135 — trong `codex exec`, MCP tool call bị auto-cancel vì stdin đóng, không có config key tắt approval prompt; bypass duy nhất là `--dangerously-bypass-approvals-and-sandbox`. **Chốt:** L3 dùng flag này (chấp nhận được: worker chạy trong git worktree sandbox cô lập trên server, cgroup limit, không có secrets ngoài worker token); **L2 trên máy dev KHÔNG dùng** — spawn directive Codex cho L2 phải kiểm tra version/behavior lúc runtime, không được → server trả `SPAWN_DENIED {reason: "provider_headless_limitation"}` gợi ý dùng provider khác hoặc L3.
-- **C2 — Codex `bearer_token_env_var` đọc biến môi trường** (đúng bài học F-18): enrollment script phải đảm bảo `CO_FORCE_TOKEN` tồn tại trong env của codex — ghi vào managed block trong shell profile (đánh dấu, idempotent) và verify bằng 1 lần `tools/list` thật; user từ chối sửa profile → fallback ghi token thẳng vào `~/.codex/config.toml`? **Không** — config.toml không nhận literal token; fallback là stdio shim (`mcp_servers.co-force.command = npx mcp-remote <url> --header …`).
-- **C3 — `agy` MCP header:** tài liệu công khai chưa khẳng định custom Authorization header cho `serverUrl`; enrollment verify thật — không gửi được header → dùng stdio shim như C2 fallback. Đánh dấu TODO re-verify mỗi release agy (CLI mới, đổi nhanh).
-- **C4 — Auth status không đồng nhất:** `claude auth status` / `codex login status` / agy qua keyring — mỗi provider 1 parser (mô hình Tutti `service_helpers.go`), trả về `logged_in | expired | absent`.
+- **C1 — Codex `exec` + MCP approvals:** issue openai/codex#24135 — in `codex exec`, MCP tool calls are automatically cancelled because stdin is closed, and there is no config key to disable the approval prompt; the only bypass is `--dangerously-bypass-approvals-and-sandbox`. **Verdict:** L3 uses this flag (acceptable since the worker runs in an isolated git worktree sandbox on the server, with cgroup limits and no secrets other than the worker token); **L2 on developer machines MUST NOT use this** — the Codex spawn directive for L2 must verify the version/behavior at runtime; if not possible, the server returns `SPAWN_DENIED {reason: "provider_headless_limitation"}` suggesting another provider or L3.
+- **C2 — Codex `bearer_token_env_var` reads environment variables** (aligning with F-18): the enrollment script must ensure `CO_FORCE_TOKEN` exists in Codex's env — writing to a managed block in the shell profile (marked, idempotent) and verifying with one real `tools/list` call; if the user refuses to modify their profile → fallback to writing the token directly to `~/.codex/config.toml`? **No** — config.toml does not accept a literal token; fallback is the stdio shim (`mcp_servers.co-force.command = npx mcp-remote <url> --header …`).
+- **C3 — `agy` MCP header:** public documentation has not confirmed custom Authorization headers for `serverUrl`; verify this during enrollment — if headers cannot be sent → fall back to the stdio shim as in C2. Mark a TODO to re-verify this on each `agy` release (new CLI, changes rapidly).
+- **C4 — Inconsistent Auth Status Command:** `claude auth status` / `codex login status` / agy via keyring — one parser per provider (Tutti `service_helpers.go` model), returning `logged_in | expired | absent`.
 
-## 4. Tích hợp theo 3 lane (architecture.md §5)
+## 4. Integration via the 3 Lanes (architecture.md §5)
 
-- **L1 (interactive):** Plan 05 enrollment ghi MCP config cho **mọi CLI phát hiện được trên máy** theo `mcp_config_kind` (bảng §3) — một máy dev có cả `claude` + `codex` + `agy` thì cả 3 vào cùng workspace, mỗi CLI một agent identity (cùng agent token của máy).
-- **L2 (spawn-by-directive):** `spawn_directive` dựng từ `headless_command` + `auto_approve_flags` + env (scoped token TTL ngắn). Requester chạy bằng shell tool — server chọn provider theo yêu cầu task + availability máy đó (report lúc check-in: client gửi danh sách CLI local).
-- **L3 (worker pool):** installer (Plan 06 §3.3) cài + login từng CLI được chọn dưới user `coforce` (login flow headless theo bảng §3); ProcessManager spawn với `sandbox_bypass_flags` trong worktree; health probe C4 chạy 30 phút/lần — subscription hết hạn → component `provider.<name>` = down → `SERVICE_UNAVAILABLE` khi cần spawn + alert kèm lệnh re-login (fail-loud N2, **không** âm thầm chuyển sang API key).
+- **L1 (interactive):** Plan 05 enrollment writes MCP configuration for **every CLI detected on the machine** according to its `mcp_config_kind` (table §3) — if a developer machine has both `claude`, `codex`, and `agy`, all three join the same workspace, each CLI using its own agent identity (sharing the same machine-scope agent token).
+- **L2 (spawn-by-directive):** The `spawn_directive` is constructed from `headless_command` + `auto_approve_flags` + env (scoped, short-lived token). The requester runs this via a shell tool — the server selects the provider based on the task requirements + availability on that machine (reported during check-in: the client sends its list of locally available CLIs).
+- **L3 (worker pool):** The installer (Plan 06 §3.3) installs + logs into each selected CLI under the `coforce` user (headless login flow per table §3); the `ProcessManager` spawns the CLI with `sandbox_bypass_flags` in a worktree; a health probe (C4) runs every 30 minutes — if the subscription expires → the component `provider.<name>` goes down → returns `SERVICE_UNAVAILABLE` when a spawn is requested + alerts with a re-login command (fail-loud N2, **no** silent fallback to API keys).
 
-## 5. Tận dụng tối đa subscription cho Quality Engine
+## 5. Maximizing Subscription Utility for the Quality Engine
 
-1. **Review chéo & critique thật sự đa mô hình:** policy mặc định khi hệ có ≥ 2 providers → nâng `reviewer_must_differ = "provider"`; critique fan-out ưu tiên phủ Claude + GPT + Gemini trước khi lặp cùng provider (Plan 07 §6 — "bất đồng là tín hiệu").
-2. **Reasoner qua CLI worker (tùy chọn, tiết kiệm API cost):** `reasoner_provider = "cli-worker"` — recheck/critique-tổng-hợp route thành job L3 chạy trên subscription thay vì gọi API reasoner. Trade-off: latency cao hơn, không streaming; phù hợp nightly distillation/consolidation. Embedding/classifier **vẫn bắt buộc Ollama** (không CLI nào làm embedding).
-3. **Cost visibility:** mỗi spawn ghi provider + duration vào `agent_activities`; dashboard hiển thị usage per provider để user cân đối hạn mức subscription (rate limit của Claude Max / ChatGPT Pro là tài nguyên thật).
-4. **Rate-limit awareness & cross-provider failover (Plan 03 §5):** bảng `provider_status` (server.db) ghi `rate_limited_until` per máy/provider — nguồn: agent tự khai khi `handover(reason="rate_limit")` hoặc stderr parser khi L2/L3 worker exit (mở rộng C4). Trong cooldown: plan_team/auto-staffing/delegation **không giao việc** cho provider đó; task đang dở được handover sang provider khác (kịch bản chuẩn: Claude limit → agy tiếp quản); hết cooldown → provider tự trở lại pool. Dashboard hiển thị cooldown còn lại.
+1. **Cross-Review & Genuinely Multi-Model Critique:** The default policy when the system has ≥ 2 providers → enforces `reviewer_must_differ = "provider"`; critique fan-outs prioritize covering Claude + GPT + Gemini before repeating the same provider (Plan 07 §6 — "dissent is a signal").
+2. **Reasoner via CLI Worker (Optional, saves API costs):** `reasoner_provider = "cli-worker"` — rechecks/consolidated critiques are routed as L3 jobs running on the subscription instead of calling a cloud reasoner API. Trade-off: higher latency, no streaming; ideal for nightly distillation/consolidation. Embedding/classification **still strictly requires Ollama** (no CLI provider does embedding).
+3. **Cost Visibility:** Every spawn logs the provider + duration into `agent_activities`; the dashboard displays usage per provider so users can manage subscription limits (rate limits for Claude Max / ChatGPT Pro are real resources).
+4. **Rate-limit Awareness & Cross-Provider Failover (Plan 03 §5):** The `provider_status` table (`server.db`) records `rate_limited_until` per machine/provider — sourced from: the agent declaring it via `handover(reason="rate_limit")` or the stderr parser when L2/L3 workers exit (expanding on C4). During cooldown: plan_team/auto-staffing/delegation **do not assign tasks** to that provider; in-progress tasks are handed over to another provider (standard scenario: Claude limit reached → agy takes over); once the cooldown expires → the provider automatically returns to the pool. The dashboard displays the remaining cooldown.
 
-## 6. Trình tự Triển khai (Step-by-Step)
+## 6. Steps to Implement (Step-by-Step)
 
-1. `providers.rs`: struct `ProviderSpec` + registry mặc định 4 providers (bảng §3) + merge override từ `server.toml [providers]`; unit test template rendering (`{prompt}`, `{cwd}`, `{session_id}` escaping).
-2. Auth probes (C4): trait `AuthStatusParser`, 1 impl/provider, mock test với output thật (fixture từ CLI hiện hành).
-3. Plan 05 script: detect đủ `claude`/`codex`/`agy`/`cursor-agent`, ghi MCP config theo `mcp_config_kind` (golden-file test per kind), verify header per client (C2/C3), fallback stdio shim.
-4. Plan 06 installer §3.3: bước login từng CLI (in URL/code cho flow SSH), smoke test spawn headless 1 prompt "ping" per provider.
-5. ProcessManager (Plan 03) đọc registry — xóa mọi `match provider`; spawn_directive builder cho L2 + sandbox spawn cho L3 (kèm C1 gate).
-6. Quality Engine hooks (Plan 07): provider-diversity picker cho review/critique; option `cli-worker` reasoner.
-7. E2E: 1 task đi đủ vòng Dev (Claude Code) → reviewer (Codex L3) → critique (agy L3) trên server test.
+1. `providers.rs`: implement the `ProviderSpec` struct + default registry for the 4 providers (table §3) + merge overrides from `server.toml [providers]`; unit test template rendering (`{prompt}`, `{cwd}`, `{session_id}` escaping).
+2. Auth probes (C4): implement the `AuthStatusParser` trait, 1 implementation per provider, mock-testing against real output (fixtures from current CLIs).
+3. Plan 05 script: detect all of `claude`/`codex`/`agy`/`cursor-agent`, write MCP configuration based on its `mcp_config_kind` (golden-file test per kind), verify custom header support (C2/C3), falling back to the stdio shim if unsupported.
+4. Plan 06 installer §3.3: implement the login step for each CLI (printing URLs/codes for SSH flows), smoke-testing headless spawning with a simple "ping" prompt per provider.
+5. ProcessManager (Plan 03): reads the registry — removing all `match provider` blocks; implements the `spawn_directive` builder for L2 + sandbox spawning for L3 (with C1 gate).
+6. Quality Engine hooks (Plan 07): provider-diversity picker for reviews/critiques; `cli-worker` reasoner option.
+7. E2E: test one task traversing the entire cycle: Dev (Claude Code) → reviewer (Codex L3) → critique (agy L3) on the test server.

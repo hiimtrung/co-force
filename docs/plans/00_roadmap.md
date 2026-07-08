@@ -1,41 +1,44 @@
-# Kế Hoạch Tổng: 00 - Master Plan — Release 1.0 End-to-End (Product Ready)
+# Master Plan: 00 - Roadmap — Release 1.0 End-to-End (Product Ready)
 
-**Status:** Approved baseline — 2026-07-08 (v2, thay thế hoàn toàn bản phased-MVP cùng ngày)
-**Vai trò:** Master plan cho **một release duy nhất, đầy đủ tính năng, product-ready**. Không có MVP trung gian. Khi có xung đột với plan khác, file này thắng.
+**Status:** Approved baseline — 2026-07-08 (v2, completely replaces the phased-MVP plan of the same date)
+**Role:** Master plan for **a single, fully-featured, product-ready release**. No intermediate MVPs. In case of conflict with other plans, this file wins.
 
-*Tham chiếu:* `docs/architecture.md` (kiến trúc chốt), `docs/plans/01–10` (08 = provider CLI subscription-first; 09 = agent operating protocol; 10 = solo orchestration & team bootstrap), `docs/review_findings.md` (§6 — điều chỉnh định hướng)
+*Reference Documents:*
+- `docs/architecture.md` (finalized architecture)
+- `docs/plans/01–10` (08 = provider CLI subscription-first; 09 = agent operating protocol; 10 = solo orchestration & team bootstrap)
+- `docs/review_findings.md` (§6 — orientation adjustment)
 
 ---
 
-## 1. Tầm nhìn & Các Nguyên tắc Bất biến (Non-negotiables)
+## 1. Vision & Immutable Principles (Non-negotiables)
 
-> **Co-Force tồn tại để nâng chất lượng đầu ra của AI agents đến cực hạn — không phải để chạy nhanh hơn.** Các agent phải tương tác 2 chiều với nhau như một product team thật: có vai trò, có review chéo, có phản biện, có bằng chứng verify — không agent nào tự chấm bài của chính mình.
+> **Co-Force exists to drive the output quality of AI agents to the absolute limit — not just to run faster.** Agents must interact bi-directionally like a real product team: with distinct roles, cross-reviews, constructive critiques, and verification evidence — no agent ever grades its own work.
 
-| # | Nguyên tắc | Hệ quả thiết kế |
+| # | Principle | Design Consequence |
 | :- | :--- | :--- |
-| N1 | **Quality-first, tốc độ là thứ yếu** | Quality gates (spec review, code review chéo, verification evidence) là bắt buộc mặc định, không phải opt-in. Chấp nhận task chậm hơn để qua đủ gates. |
-| N2 | **Không có degraded mode cắt tính năng** | Ollama là thành phần **bắt buộc** trên server. Khi một thành phần lỗi → tool trả `SERVICE_UNAVAILABLE` rõ ràng + hệ thống tự phục hồi (systemd restart, retry queue) + cảnh báo ops. Không bao giờ âm thầm trả kết quả chất lượng thấp hơn (vd keyword search thay semantic). |
-| N3 | **Server nặng, client nhẹ** | Server init được phép lâu (cài Ollama, pull models, tunnel, systemd). Client setup < 60 giây, **không cần cài binary** — agent client nói streamable HTTP thẳng tới URL public. |
-| N4 | **Server độc lập, truy cập từ mọi nơi** | Máy chủ riêng + **cloudflared tunnel** → domain public (`https://mcp.<domain>/mcp`). Không mở port, TLS do Cloudflare. LAN/localhost vẫn dùng được cùng binary — cùng feature set, chỉ khác cách expose. |
-| N5 | **Bidirectional A2A** | Agents gửi/nhận message, yêu cầu review, phản biện lẫn nhau — qua inbox piggyback + long-poll. Server có thể chủ động spawn agent bù vai trò thiếu. |
-| N6 | **Mở rộng được sau release** | Clean Architecture + trait ports + provider registry — tính năng mới (Tauri, SSO, Postgres, vector engine mới) là adapter mới, không đổi core. |
+| N1 | **Quality-First, Speed is Secondary** | Quality gates (spec reviews, cross code reviews, verification evidence) are mandatory by default, not opt-in. Accept slower task completion to satisfy all gates. |
+| N2 | **No Degraded Mode with Cut Features** | Ollama is a **mandatory** component on the server. If a component fails → tools return a clear `SERVICE_UNAVAILABLE` error + the system automatically self-recovers (systemd restarts, retry queues) + alerts ops. Never silently return lower quality results (e.g. keyword LIKE searches instead of semantic search). |
+| N3 | **Heavy Server, Light Client** | Server initialization is permitted to take longer (installing Ollama, pulling models, setting up tunnels, configuring systemd). Client setup must take < 60 seconds and **require no binaries** — client agents speak streamable HTTP directly to the public URL. |
+| N4 | **Independent Server, Access from Anywhere** | Private server + **cloudflared tunnel** → public domain (`https://mcp.<domain>/mcp`). No ports exposed, TLS handled by Cloudflare. LAN/localhost remains supported using the same binary — same feature set, only the exposure method differs. |
+| N5 | **Bidirectional A2A** | Agents send/receive messages, request reviews, and critique each other — via inbox piggybacking + long-polling. The server can actively spawn agents to fill missing roles. |
+| N6 | **Extensible Post-Release** | Clean Architecture + trait ports + provider registry — new features (Tauri client viewer, SSO, Postgres, new vector engines) are new adapters, leaving the core untouched. |
 
 ---
 
-## 2. Phạm vi Release 1.0 (toàn bộ ship một lần)
+## 2. Release 1.0 Scope (All shipped in one release)
 
-### 2.1 Năng lực chính
-1. **Coordination đầy đủ:** check-in/identity, task lifecycle mở rộng (§Plan 07), file locks + conflict, delegation, activity stream, shared contexts, dynamic AGENTS.md.
-2. **Quality Engine (Plan 07 — trái tim sản phẩm):** role system, quality policy per workspace, review chéo bắt buộc, server-side recheck bằng LLM, verification evidence, critique fan-out, quality metrics.
-3. **A2A hai chiều:** messaging + inbox + long-poll `wait_events`, spawn sub-agent, handover, auto-staffing vai trò thiếu; **solo orchestration** (Plan 10) — 1 agent + backlog lớn → tự đôn làm PM, `plan_team` estimate dev/reviewer/qa/ba, spawn subagents với context hẹp chống hallucinate, race-safe trên cùng máy.
-4. **Agentic RAG (Plan 04):** semantic memory/knowledge/skill, agentic chunking, embedding cache, re-embed queue (resilience, không phải degrade), memory consolidation nightly.
-5. **Server hạ tầng (Plan 06):** installer một lệnh, cloudflared tunnel, auth token, systemd + watchdog, backup/restore, health/alerting, dashboard ops.
-6. **Client onboarding (Plan 05):** enrollment one-liner từ dashboard, tự cấu hình Claude Code / **Codex CLI** / **Antigravity CLI (agy)** / Cursor / Windsurf / Copilot (spec per CLI: Plan 08), rule injection theo **Agent Operating Protocol (Plan 09)** — điểm khởi đầu check_in, bản đồ tool, hành vi đồng nhất qua 4 lớp enforce.
-7. **Dashboard web** (embedded, cùng port): agent status realtime, kanban, review queue, memory browser, quality metrics, quản trị token/enrollment.
+### 2.1 Core Capabilities
+1. **Full Coordination:** check-in/identity, extended task lifecycle (§Plan 07), file locks + conflicts, delegation, activity stream, shared contexts, dynamic AGENTS.md.
+2. **Quality Engine (Plan 07 — Heart of the Product):** role system, per-workspace quality policies, mandatory cross-reviews, server-side LLM-driven spec rechecks, verification evidence, critique fan-out, quality metrics.
+3. **Two-Way A2A:** messaging + inbox + `wait_events` long-poll, sub-agent spawning, handover, auto-staffing missing roles; **solo orchestration** (Plan 10) — 1 agent + large backlog → promotes itself to PM, estimates dev/reviewer/qa/ba via `plan_team`, spawns subagents with narrow context to prevent hallucinations, race-safe execution on the same machine.
+4. **Agentic RAG (Plan 04):** semantic memory/knowledge/skills, agentic chunking, embedding cache, re-embedding queues (resilience, not degradation), nightly memory consolidation.
+5. **Infrastructure Server (Plan 06):** one-command installer, cloudflared tunnel, auth tokens, systemd + watchdog, backup/restore, health/alerting, ops dashboard.
+6. **Client Onboarding (Plan 05):** enrollment one-liner from dashboard, auto-configures Claude Code / **Codex CLI** / **Antigravity CLI (agy)** / Cursor / Windsurf / VS Code Copilot (CLI specs: Plan 08), rule injection per **Agent Operating Protocol (Plan 09)** — check-in starting point, tool map, uniform behavior enforced across 4 layers.
+7. **Web Dashboard** (embedded, sharing server port): real-time agent status, kanban board, review queue, memory browser, quality metrics, token/enrollment management.
 
-### 2.2 MCP Tools (39 tools — bảng đầy đủ tại architecture §6.4)
+### 2.2 MCP Tools (39 tools — full catalog at architecture §6.4)
 
-| Nhóm | Tools |
+| Group | Tools |
 | :--- | :--- |
 | Identity (3) | check_in, whoami, guide |
 | Task (7) | create_tasks, list_tasks, update_task, approve_tasks, recheck_tasks, delegate_task, submit_verification |
@@ -46,14 +49,14 @@
 | RAG (7) | store_memory, recall, classify, create_skill, list_skills, get_skill, consolidate_memory |
 | Config/Admin (4) | config, register_role, quality_policy, health |
 
-### 2.3 Ngoài phạm vi 1.0 (backlog mở rộng sau — N6)
-Tauri desktop app **phía client** (dashboard viewer + notifications, gọi HTTPS qua tunnel — server luôn headless; dashboard web đã đủ cho 1.0) · SSO/OIDC · Postgres backend option · sqlite-vec/HNSW upgrade (trait đã chừa sẵn) · mobile push notification · multi-org/multi-tenant · marketplace skill sharing · IDE extensions native.
+### 2.3 Out of Scope for 1.0 (Future backlog — N6)
+Tauri desktop app **client-side** (dashboard viewer + native notifications, calls HTTPS via tunnel — the server is always headless; the web dashboard is sufficient for 1.0) · SSO/OIDC · Postgres backend option · sqlite-vec/HNSW upgrade (traits already abstracted) · mobile push notifications · multi-org/multi-tenant · marketplace skill sharing · native IDE extensions.
 
 ---
 
-## 3. Cấu trúc Workstream (WS) & Phụ thuộc
+## 3. Workstream (WS) Structure & Dependencies
 
-Một release duy nhất vẫn cần thứ tự tích hợp. 9 workstreams, tích hợp liên tục trên `main` sau CI xanh:
+Although shipped in a single release, integration follows a structured dependency order. 9 workstreams integrated continuously on `main` once CI passes:
 
 ```mermaid
 graph LR
@@ -69,109 +72,109 @@ graph LR
     C & E & G & H --> I["WS-I E2E Hardening<br/>+ Release"]
 ```
 
-### WS-A — Domain & Database (Plan 01) · ~1.5 tuần
-- Strong types, enums (thêm các status/bảng mới của Plan 07: `agent_messages`, `reviews`, `critiques`, `quality_policies`, `verification_records`)
-- Migrations cho **2 tầng DB** (F-17): `server.db` cấp server (`api_tokens`, `workspaces` registry, `audit_log`, `provider_status` — cooldown rate-limit per máy/provider) + DB per-workspace (13 bảng nghiệp vụ, gồm `handovers` — Plan 03 §5.6), `memory_entries.embedding BLOB`, index cho hot paths (locks by ws+path, messages by target+undelivered, activities by ws+time)
-- Repository traits + Sqlite impls + integration tests in-memory
-- **DoD:** `cargo test` xanh; mọi bảng có repo + test CRUD; migration chạy idempotent.
+### WS-A — Domain & Database (Plan 01) · ~1.5 weeks
+- Strong types, enums (adding new tables/status from Plan 07: `agent_messages`, `reviews`, `critiques`, `quality_policies`, `verification_records`)
+- Migrations for the **two-tier DB** (F-17): `server.db` at the server level (`api_tokens`, `workspaces` registry, `audit_log`, `provider_status` — rate-limit cooldown per machine/provider) + DB per-workspace (13 business tables, including `handovers` — Plan 03 §5.6), `memory_entries.embedding BLOB`, index optimization for hot paths (locks by ws+path, messages by target+undelivered, activities by ws+time)
+- Repository traits + SQLite implementations + in-memory integration tests
+- **DoD:** `cargo test` passes; all tables have repos + CRUD tests; migrations run idempotently.
 
-### WS-B — MCP Server, Transport & Auth · ~2 tuần
-- rmcp 2.x: `tool_router` + `ServerHandler`; streamable HTTP (+session) là transport chính, stdio phụ
-- Axum router hợp nhất: `/mcp` (MCP) + `/api` (dashboard REST) + `/dashboard` (static) + `/healthz` + `/setup` (enrollment script) — **một port duy nhất**
-- Auth middleware (tower layer): Bearer token → identity; token hashed trong DB; rate limit per token; audit log
-- Session binding `Mcp-Session-Id` → agent record; disconnect → grace period → reclaim daemon
-- Interlocking Lớp 3 (`CHECK_IN_REQUIRED` + `recovery_action` + `protocol_next_step` trong mọi response); 39 tool descriptions theo chuẩn Plan 09 §3 (Lớp 2)
-- **DoD:** 2 client thật (Claude Code + Cursor) connect qua HTTPS công khai với token, check-in/lock/conflict hoạt động; request không token bị 401; token revoke có hiệu lực ngay.
+### WS-B — MCP Server, Transport & Auth · ~2 weeks
+- rmcp 2.x: `tool_router` + `ServerHandler`; streamable HTTP (+session) is the primary transport, stdio secondary
+- Consolidated Axum router: `/mcp` (MCP) + `/api` (dashboard REST) + `/dashboard` (static) + `/healthz` + `/setup` (enrollment script) — **sharing a single port**
+- Auth middleware (tower layer): Bearer token → identity; tokens hashed in DB; rate limiting per token; audit logging
+- Session binding `Mcp-Session-Id` → agent record; disconnect detection → grace period → reclaim daemon runs
+- Layer 3 Interlocking (`CHECK_IN_REQUIRED` + `recovery_action` + `protocol_next_step` on all responses); 39 tool descriptions matching Plan 09 §3 standards (Layer 2)
+- **DoD:** 2 real clients (Claude Code + Cursor) connect via public HTTPS using tokens, check-in/lock/conflict workflows function; requests without tokens return 401; revoked tokens take effect immediately.
 
-### WS-C — Quality Engine & A2A Messaging (Plan 07) · ~2.5 tuần — **critical path**
-- Task state machine mở rộng + quality policy engine
+### WS-C — Quality Engine & A2A Messaging (Plan 07) · ~2.5 weeks — **critical path**
+- Task state machine extension + quality policy engine
 - Messaging (send/respond/inbox piggyback/wait_events long-poll)
 - Review workflow (request/assign/submit/rework), critique fan-out
 - Server-side LLM services: spec recheck, review assistant, session summary
 - Verification evidence enforcement
-- **DoD:** kịch bản "3 agents như một team" (§6.1) pass tự động trong integration test với mock LLM + pass thủ công với LLM thật.
+- **DoD:** "3 agents as a team" scenario (§6.1) passes automatically in integration tests with mock LLM + passes manually with real LLM.
 
-### WS-D — RAG & LLM Infrastructure (Plan 04) · ~2 tuần
-- `LlmProvider` trait, 3 vai trò model: `embedding` / `classifier` / `reasoner`; providers: Ollama (mặc định) + Anthropic/OpenAI/Gemini (cho reasoner nếu user muốn chất lượng cao hơn nữa)
-- Semaphore concurrency, timeout, retry có backoff; re-embed queue (fail-loud: recall khi thiếu vector báo `PARTIAL_INDEX` chứ không âm thầm)
-- Brute-force cosine + trait `VectorSearch`; embedding cache SHA-256
-- Agentic chunking (structural + semantic boundary — làm đủ, không cắt scope)
-- Nightly consolidation: dedup memory (cosine > 0.92), distill session memories → knowledge
-- **DoD:** benchmark 10k entries recall < 50ms; kill Ollama giữa chừng → tool báo lỗi rõ, queue giữ nguyên, tự hồi phục khi Ollama restart; consolidation giảm ≥ 30% duplicate trong test corpus.
+### WS-D — RAG & LLM Infrastructure (Plan 04) · ~2 weeks
+- `LlmProvider` trait, 3 model roles: `embedding` / `classifier` / `reasoner`; providers: Ollama (default) + Anthropic/OpenAI/Gemini (optional for reasoner if the user requests higher quality)
+- Semaphore concurrency, timeouts, retries with backoff; re-embed queue (fail-loud: recall requests with missing vectors report `PARTIAL_INDEX` rather than silently degrading)
+- Brute-force cosine + `VectorSearch` trait; SHA-256 embedding cache
+- Agentic chunking (structural + semantic boundary — full implementation, no scope cuts)
+- Nightly consolidation: memory deduplication (cosine similarity > 0.92), distilling session memories → knowledge
+- **DoD:** benchmark 10k entries recall < 50ms; killing Ollama mid-run → tools report a clear error, queue remains intact, auto-recovers when Ollama restarts; consolidation reduces duplicates by ≥ 30% in test corpus.
 
-### WS-E — Active Orchestration (Plan 03) · ~1.5 tuần
-- Event bus; doc generator (AGENTS.md managed block, debounce); provider registry trong config (**Plan 08** — spec verified cho claude/codex/agy/cursor-agent, template lệnh, `max_spawn_depth`, budget flags, auth probes); ProcessManager (spawn/reap/kill, log ra activity)
-- Handover flow; auto-staffing: quality policy thiếu reviewer → server spawn agent role reviewer
-- Solo orchestration (Plan 10): `plan_team` heuristic + reasoner, solo nudge, stall detector, local worktrees option, playbook PM
-- **DoD bổ sung:** kịch bản Plan 10 §8.7 pass — 1 agent agy + 8 tasks → tự bootstrap team 3 subagents, đủ gates, không race
-- Cross-provider handover (Plan 03 §5): package validated + lock escrow + provider cooldown + re-dispatch khi client chết
-- **DoD:** handover thật giữa 2 provider CLI — kịch bản chuẩn "Claude chạm rate limit → agy tiếp quản cùng feature, không rơi gate" (chủ động + bị động kill -9); spawn có depth limit; kill từ dashboard hoạt động.
+### WS-E — Active Orchestration (Plan 03) · ~1.5 weeks
+- Event bus; doc generator (AGENTS.md managed block, debounced); provider registry in configuration (**Plan 08** — specs verified for claude/codex/agy/cursor-agent, command templates, `max_spawn_depth`, budget flags, auth probes); ProcessManager (spawn/reap/kill, logging to activities)
+- Handover workflow; auto-staffing: quality policy missing a reviewer → server spawns agent with reviewer role
+- Solo orchestration (Plan 10): `plan_team` heuristics + reasoner, solo nudge, stall detector, local worktrees option, PM playbook
+- **Extended DoD:** Plan 10 §8.7 scenario passes — 1 agy agent + 8 tasks → auto-bootstraps team of 3 subagents, all gates pass, no races
+- Cross-provider handover (Plan 03 §5): package validated + lock escrow + provider cooldown + re-dispatch on client death
+- **DoD:** real handover between 2 provider CLIs — standard scenario "Claude hits rate limit → agy takes over the same feature, no gates dropped" (active + passive kill -9); spawning depth limited; kill from dashboard functions.
 
-### WS-F — Server Deployment & Ops (Plan 06) · ~1.5 tuần (song song từ sớm)
-- Installer `co-force-server install` (hoặc install.sh): binary, user hệ thống, Ollama + pull 3 models, cloudflared tunnel + DNS, systemd units + hardening, backup timer, secrets
-- Health model per-component + `/healthz`; alert webhook (Discord/Slack/Telegram); admin CLI (token, status, backup, upgrade)
-- **DoD:** từ máy Ubuntu trắng → server public hoạt động trong 1 lần chạy installer (interactive); restore từ backup drill thành công; reboot máy → mọi service tự lên.
+### WS-F — Server Deployment & Ops (Plan 06) · ~1.5 weeks (run in parallel early on)
+- Installer `co-force-server install` (or install.sh): binary setup, system user creation, Ollama setup + pull 3 models, cloudflared tunnel + DNS setup, systemd units + hardening, backup timer, secrets management
+- Per-component health model + `/healthz` endpoint; alert webhooks (Discord/Slack/Telegram); admin CLI (token, status, backup, upgrade)
+- **DoD:** from a blank Ubuntu machine → public server works in a single installer run (interactive); restoring from backup drill succeeds; rebooting machine → all services start automatically.
 
-### WS-G — Client Setup & Onboarding (Plan 05) · ~1 tuần
-- Endpoint `/setup` serve script enrollment (sh + ps1) templated URL; dashboard sinh one-liner kèm token
-- Script: detect project + IDE, ghi config **machine-scope** (`claude mcp add -s local` / `~/.cursor/mcp.json` — token per-máy không vào file project, F-18) + rules template Plan 09 §2 + `.co-force/` + gitignore, verify kết nối, in hướng dẫn 3 dòng
-- `co_force_guide` động + cờ `onboarding: true` + E2E "cold agent tự tuân protocol" (Plan 09 §4, §7.6)
-- **DoD:** trên máy client trắng (chỉ có Cursor), từ paste one-liner đến agent check-in thành công **< 60 giây**; chạy lại idempotent.
+### WS-G — Client Setup & Onboarding (Plan 05) · ~1 week
+- Endpoint `/setup` serves enrollment script (sh + ps1) with templated URL; dashboard generates one-liner with token
+- Script: detects project + IDE, writes **machine-scope** config (`claude mcp add -s local` / `~/.cursor/mcp.json` — token per-machine not in project files, F-18) + Plan 09 §2 rules template + `.co-force/` + gitignore, verifies connection, prints 3-line instructions
+- Dynamic `co_force_guide` + `onboarding: true` flag + E2E "cold agent automatically follows protocol" (Plan 09 §4, §7.6)
+- **DoD:** on a blank client machine (with only Cursor), from pasting the one-liner to agent check-in success takes **< 60 seconds**; runs idempotently.
 
-### WS-H — Dashboard · ~2 tuần (song song sau WS-B)
-- SPA nhẹ (SvelteKit/React static build nhúng vào binary qua `include_dir`), WS realtime từ event bus
-- Views: Agents, Kanban + review queue, Messages/critiques, Memory browser, Quality metrics (rework rate, review coverage, findings/task), Admin (tokens, enrollment, health, spawn/kill)
-- **DoD:** mọi state change hiển thị < 1s; issue/revoke token từ UI; xem và can thiệp review queue.
+### WS-H — Dashboard · ~2 weeks (run in parallel after WS-B)
+- Light SPA (SvelteKit/React static build embedded in binary via `include_dir`), real-time WS from event bus
+- Views: Agents list, Kanban + review queue, Messages/critiques, Memory browser, Quality metrics (rework rate, review coverage, findings/task), Admin (tokens, enrollment, health, spawn/kill)
+- **DoD:** all state changes display < 1s; issue/revoke tokens from UI; view and intervene in the review queue.
 
-### WS-I — E2E Hardening & Release · ~1.5 tuần (cuối, không song song)
-- E2E test matrix (§6), load test (20 agents đồng thời, 100 req/s trên tunnel), security pass (§6.3), backup/restore + upgrade drill, docs người dùng (server admin guide + client quickstart), versioning + release CI (cargo-dist)
-- **DoD:** toàn bộ checklist §6 pass; tag v1.0.0; install từ artifact công khai thành công trên máy sạch.
+### WS-I — E2E Hardening & Release · ~1.5 weeks (final work, no parallel tasks)
+- E2E test matrix (§6), load testing (20 concurrent agents, 100 req/s over tunnel), security verification (§6.3), backup/restore + upgrade drills, user documentation (server admin guide + client quickstart), versioning + release CI (cargo-dist)
+- **DoD:** all checklist items in §6 pass; tag v1.0.0; installation from public artifacts successful on clean machines.
 
 ---
 
-## 4. Ước lượng & Nhân lực
+## 4. Estimates & Staffing
 
-| Tổng effort | ~15.5 tuần-người |
+| Total Effort | ~15.5 person-weeks |
 | :--- | :--- |
-| Song song hóa thực tế (multi-agent dev theo AGENTS.md: PM/DEV/TEST/QA) | **10–12 tuần lịch** |
-| Critical path | WS-A → WS-B → WS-C → WS-I |
+| Practical Parallelization (multi-agent dev via AGENTS.md: PM/DEV/TEST/QA) | **10–12 calendar weeks** |
+| Critical Path | WS-A → WS-B → WS-C → WS-I |
 
-Rủi ro tiến độ lớn nhất: WS-C (Quality Engine là phần chưa có tiền lệ tham chiếu trực tiếp) và độ ổn định long-poll qua Cloudflare (timeout 100s của Cloudflare → thiết kế `wait_events` timeout 55s + reconnect loop).
+Largest schedule risks: WS-C (Quality Engine has no direct precedent to reference) and long-poll connection stability over Cloudflare (Cloudflare's 100s timeout → `wait_events` designed with a 55s timeout + reconnect loop).
 
 ---
 
-## 5. Chính sách "No Silent Degradation" (thay thế mọi fallback cũ)
+## 5. "No Silent Degradation" Policy (replaces all old fallbacks)
 
-| Sự cố | Hành vi CŨ (đã bỏ) | Hành vi 1.0 |
+| Failure | Old Behavior (Removed) | 1.0 Behavior |
 | :--- | :--- | :--- |
-| Ollama down | Store không vector, recall keyword LIKE (âm thầm) | Per-tool (F-19): `store_memory` vẫn lưu nhưng response ghi rõ `index_status: "pending"` (dữ liệu không mất, minh bạch); `recall`/`classify`/`recheck` trả `SERVICE_UNAVAILABLE {component: "llm", retry_after}` — không có kết quả thay thế; systemd watchdog restart Ollama; alert webhook |
-| Model chưa pull | Bỏ qua classify | Installer đảm bảo pull xong mới hoàn tất; `/healthz` fail nếu thiếu model; server không nhận traffic khi `degraded` |
-| Vector thiếu (re-embed đang chạy) | Trả kết quả keyword âm thầm | Recall trả kèm `index_status: PARTIAL (n pending)` — agent và user biết chính xác độ tin cậy |
-| Tunnel/DNS lỗi | — | Client script verify kết nối lúc setup; server alert khi cloudflared unit fail |
-| Reviewer vắng mặt | Task tự complete | Task đứng ở gate + server auto-spawn reviewer (WS-E) hoặc thông báo user trên dashboard |
+| Ollama down | Store without vector, recall keyword LIKE (silent) | Per-tool (F-19): `store_memory` still saves but response explicitly states `index_status: "pending"` (no data lost, transparent); `recall`/`classify`/`recheck` return `SERVICE_UNAVAILABLE {component: "llm", retry_after}` — no fallback results; systemd watchdog restarts Ollama; alert webhook fires |
+| Model not pulled | Skip classify | Installer ensures all models are pulled before completing; `/healthz` fails if models are missing; server rejects traffic when `degraded` |
+| Vector missing (re-embed running) | Silent keyword search | Recall returns `index_status: PARTIAL (n pending)` — agent and user know exact confidence |
+| Tunnel/DNS failure | — | Client script verifies connection during setup; server alerts when cloudflared unit fails |
+| Reviewer absent | Task automatically completes | Task stays locked at the gate + server auto-spawns a reviewer (WS-E) or notifies user via dashboard |
 
 ---
 
-## 6. Tiêu chí Nghiệm thu Release (Acceptance)
+## 6. Release Acceptance Criteria
 
-### 6.1 Kịch bản E2E "Product Team" (bắt buộc pass với LLM thật, qua tunnel public)
-1. Admin cài server trên máy độc lập bằng installer; dashboard truy cập được qua `https://mcp.<domain>`.
-2. Client A (Claude Code) và Client B (Cursor) enroll bằng one-liner < 60s mỗi máy.
-3. Agent A (role: developer) check-in, nhận prompt tính năng → draft tasks → **server recheck bằng LLM tìm ra gap thật** → user approve trên dashboard.
-4. Agent A lock files, code, `submit_verification` kèm output test → task sang `code_review`.
-5. Agent B (role: reviewer) nhận review request qua `wait_events`, đọc diff context, `submit_review` với ≥ 1 finding → task về `rework` → A sửa → B approve → `completed`.
-6. Memory phiên làm việc được store + consolidation; phiên sau agent mới `recall` ra đúng knowledge.
-7. Kill -9 tiến trình agent A giữa chừng → sau grace period locks được reclaim, task về backlog, dashboard hiển thị đúng.
+### 6.1 E2E "Product Team" Scenario (must pass with real LLM, over public tunnel)
+1. Admin installs server on an independent machine using the installer; dashboard accessible via `https://mcp.<domain>`.
+2. Client A (Claude Code) and Client B (Cursor) enroll using the one-liner < 60s per machine.
+3. Agent A (role: developer) checks in, receives prompt → drafts tasks → **server rechecks via LLM to find a real gap** → user approves on the dashboard.
+4. Agent A locks files, writes code, `submit_verification` with test output → task enters `code_review`.
+5. Agent B (role: reviewer) receives review request via `wait_events`, reads diff context, `submit_review` with ≥ 1 finding → task returns to `rework` → A fixes → B approves → `completed`.
+6. Session memory is stored + consolidated; next session a new agent `recalls` correct knowledge.
+7. Kill -9 agent A process mid-run → after grace period locks are reclaimed, task returns to backlog, dashboard updates correctly.
 
-### 6.2 Hiệu năng
-- Tool call p95 < 300ms (không gồm LLM calls); recall p95 < 800ms (gồm embed query)
-- 20 agents đồng thời / 3 workspaces không lỗi ghi (WAL + busy_timeout)
-- `wait_events` ổn định ≥ 24h qua Cloudflare (reconnect tự động)
+### 6.2 Performance
+- Tool call p95 < 300ms (excluding LLM calls); recall p95 < 800ms (including query embedding)
+- 20 concurrent agents / 3 workspaces without write failures (WAL + busy_timeout configuration)
+- `wait_events` remains stable ≥ 24h over Cloudflare (automatic reconnects)
 
-### 6.3 Bảo mật
-- Không endpoint nào trả dữ liệu khi thiếu/sai token (kể cả `/healthz` chi tiết — bản public chỉ trả ok/fail)
-- Token lưu hashed; revoke tức thời; rate limit hoạt động; secrets file 0600; server bind 127.0.0.1 (chỉ tunnel expose)
-- `cargo audit` sạch; dependency review; không log token/API key
+### 6.3 Security
+- No endpoint returns data when token is missing/invalid (including detailed `/healthz` — public version only returns ok/fail)
+- Tokens stored hashed; immediate revocation; rate limiting active; secrets files 0600; server binds to 127.0.0.1 (exposed via tunnel only)
+- `cargo audit` clean; dependency review complete; no tokens/API keys in logs
 
-### 6.4 Vận hành
-- Reboot server → tất cả tự phục hồi; backup hàng ngày + restore drill có tài liệu; upgrade binary không mất data; alert webhook bắn khi component down > 1 phút
+### 6.4 Operations
+- Reboot server → all services self-recover; daily backups + documented restore drills; binary upgrades do not lose data; alert webhook fires if component is down > 1 minute

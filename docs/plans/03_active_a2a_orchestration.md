@@ -1,19 +1,19 @@
-# Kế Hoạch Triển Khai Chi Tiết: 03 - Active A2A Orchestration Layer
+# Detailed Implementation Plan: 03 - Active A2A Orchestration Layer
 
 **Status:** Ready for Implementation
-**Target:** `crates/co-force-core/src/orchestration/` và Event Bus
+**Target:** `crates/co-force-core/src/orchestration/` and Event Bus
 
-> **⚠️ Cập nhật 2026-07-08 (v2 — mô hình production):** Trong production, server là máy remote sau cloudflared tunnel — **server không thể spawn process trên máy client**, và workspace code nằm ở client. Vì vậy spawn/handover chạy theo **mô hình 3 lane** (chốt tại `architecture.md` §5):
-> - **Lane 2 (spawn-by-directive):** `co_force_spawn_agent(placement:"local")` → server KHÔNG spawn mà trả `spawn_directive {command, env, cwd}` + scoped token; agent yêu cầu tự chạy lệnh bằng shell tool của nó. `ProcessManager` phía server chỉ validate + sinh directive + giám sát check-in của agent con (timeout 120s).
-> - **Lane 3 (server worker pool):** spawn headless TRÊN server trong **git worktree sandbox** (`/var/lib/co-force/workspaces/{wsId}/jobs/{taskId}`) từ mirror clone qua deploy key — dùng cho reviewer/critic auto-staffing và handover khi client offline. Code mẫu §4 dưới đây áp dụng cho lane này, bổ sung: fetch mirror + tạo worktree trước khi spawn, cgroup/nice limit, token budget, xóa worktree sau job.
-> - Ma trận chọn lane + luồng handover chi tiết: `architecture.md` §5.4. Handover ưu tiên: commit + push WIP branch → L3 tiếp tục.
-> - **Solo orchestration (Plan 10):** L2 mở rộng cho kịch bản 1 agent tự bootstrap cả team trên 1 máy — spawn nhận `taskIds[]`, bootstrap prompt hẹp (context sạch chống hallucinate), quy tắc git tường minh chống race trên cùng working tree, option `use_local_worktrees` cô lập tuyệt đối, stall detector báo PM qua inbox.
-> - **Doc Generator (§3 bên dưới) chỉ ghi file nơi server có filesystem access:** worker worktrees (L3) và biến thể LAN. Với client remote, server **không thể** ghi `AGENTS.md`/`.cursorrules`/`session_status.json` vào workspace — state động deliver **in-band** qua response envelope (`workspace_pulse`, `inbox` — architecture.md §5.6); rules tĩnh do enrollment script ghi (Plan 05). Bản render AGENTS.md động expose tại `GET /api/workspaces/{id}/agents.md` cho dashboard.
+> **⚠️ Update 2026-07-08 (v2 — production model):** In production, the server is a remote machine behind a cloudflared tunnel — **the server cannot spawn processes on the client machine**, and the workspace code resides on the client. Therefore, spawning and handover operate under a **3-lane model** (finalized in `architecture.md` §5):
+> - **Lane 2 (spawn-by-directive):** `co_force_spawn_agent(placement:"local")` → the server does NOT spawn the process, but returns a `spawn_directive {command, env, cwd}` + scoped token; the requesting agent executes the command locally using its own shell tool. The server-side `ProcessManager` simply validates, generates the directive, and monitors the check-in of the child agent (120s timeout).
+> - **Lane 3 (server worker pool):** spawns headless on the server within a **git worktree sandbox** (`/var/lib/co-force/workspaces/{wsId}/jobs/{taskId}`) cloned from the mirror via a deploy key — used for automated reviewer/critic staffing and handover when the client is offline. The sample code under §4 below applies to this lane, adding: fetching mirror + creating worktree before spawn, cgroup/nice limits, token budget, deleting worktree after job completion.
+> - Detailed lane selection matrix + handover workflow: `architecture.md` §5.4. Handover priority: commit + push WIP branch → L3 worker resumes.
+> - **Solo orchestration (Plan 10):** L2 expands for the scenario where 1 agent bootstraps the entire team on a single machine — spawning receives `taskIds[]`, narrow bootstrap prompt (clean context to prevent hallucination), explicit git rules to prevent race conditions on the same working tree, `use_local_worktrees` option for absolute isolation, stall detector alerting the PM via the inbox.
+> - **Doc Generator (§3 below) only writes files where the server has filesystem access:** worker worktrees (L3) and LAN variants. For remote clients, the server **cannot** write `AGENTS.md`/`.cursorrules`/`session_status.json` into the workspace — dynamic state is delivered **in-band** via the response envelope (`workspace_pulse`, `inbox` — architecture.md §5.6); static rules are written by the enrollment script (Plan 05). The dynamic AGENTS.md render is exposed at `GET /api/workspaces/{id}/agents.md` for the dashboard.
 
-## 1. Context & Mục Tiêu
-Đây là module cốt lõi nâng cấp Co-Force thành **Active A2A Orchestrator**. Thay vì chỉ bị động trả lời MCP requests, server có khả năng theo dõi state thay đổi (qua Event Bus), tự động sinh tài liệu định hướng (`AGENTS.md`), và chủ động đẻ nhánh (spawn) các agent mới bằng OS Process (dành cho tính năng chia việc hoặc fallback/handover).
+## 1. Context & Objectives
+This is the core module upgrading Co-Force to an **Active A2A Orchestrator**. Instead of simply responding passively to MCP requests, the server monitors state changes (via the Event Bus), automatically generates orientation documentation (`AGENTS.md`), and proactively spawns new agents using OS Processes (for task division or fallback/handover).
 
-*Tài liệu tham chiếu:*
+*Reference Documents:*
 - `URD.md` (Section 14.2 Event-Driven Architecture)
 - `URD.md` (Group I: Active A2A Orchestration - UC-37, UC-38)
 - `URD.md` (UC-36: Dynamic AGENTS.md Generation)
@@ -21,11 +21,11 @@
 ---
 
 ## 2. In-Memory Event Bus
-**Vị trí:** `crates/co-force-core/src/orchestration/bus.rs`
+**Location:** `crates/co-force-core/src/orchestration/bus.rs`
 
-Giải quyết bài toán kết dính rời rạc (Decoupling) giữa MCP handlers và các Background Tasks.
+Decouples MCP handlers and Background Tasks.
 
-### 2.1 Định nghĩa Sự Kiện (Events)
+### 2.1 Event Definition
 ```rust
 #[derive(Debug, Clone)]
 pub enum WorkspaceEvent {
@@ -39,22 +39,22 @@ pub enum WorkspaceEvent {
 ```
 
 ### 2.2 Global Broadcaster
-Tạo một instance của `tokio::sync::broadcast::Sender` và chia sẻ cho toàn bộ các Use Case thông qua `Arc`.
+Create an instance of `tokio::sync::broadcast::Sender` and share it across all Use Cases via `Arc`.
 ```rust
-// Khởi tạo ở main.rs hoặc lib.rs
+// Initialize in main.rs or lib.rs
 let (tx, _rx) = tokio::sync::broadcast::channel::<WorkspaceEvent>(1024);
 let bus_sender = Arc::new(tx);
 ```
-Mỗi Use Case (như `LockFilesUseCase`) khi làm xong nghiệp vụ DB, sẽ gọi `bus_sender.send(WorkspaceEvent::FilesLocked { ... }).ok();`.
+Each Use Case (like `LockFilesUseCase`) upon completing its DB transaction calls `bus_sender.send(WorkspaceEvent::FilesLocked { ... }).ok();`.
 
 ---
 
 ## 3. Dynamic AGENTS.md Generator
-**Vị trí:** `crates/co-force-core/src/orchestration/doc_generator.rs`
+**Location:** `crates/co-force-core/src/orchestration/doc_generator.rs`
 
-Background task lắng nghe Event Bus, gom nhóm (debounce) và tự động ghi đè nội dung file AGENTS.md.
+Background task listening to the Event Bus, debouncing events, and automatically overwriting the AGENTS.md file.
 
-### 3.1 Vòng lặp Daemon
+### 3.1 Daemon Loop
 ```rust
 pub async fn run_doc_generator(
     mut rx: tokio::sync::broadcast::Receiver<WorkspaceEvent>,
@@ -62,23 +62,23 @@ pub async fn run_doc_generator(
     task_repo: Arc<dyn TaskRepository>
 ) {
     loop {
-        // Lắng nghe sự kiện
+        // Listen for events
         let Ok(event) = rx.recv().await else { break };
         
-        // Debounce: Đợi 2-3s xem có event nào nữa không (tránh ghi ổ cứng liên tục)
+        // Debounce: Wait 2-3s for consecutive events to avoid excessive writes
         // ... (tokio::time::sleep logic)
         
-        // Query DB lấy state mới nhất
+        // Query DB for latest state
         let agents = agent_repo.list_active(...).await;
         let tasks = task_repo.find_pending(...).await;
         
-        // Format thành Markdown
+        // Format to Markdown
         let md_content = format_to_managed_block(&agents, &tasks);
         
-        // Ghi vào .co-force/AGENTS.md (sử dụng Regex để chỉ thay thế trong phần BEGIN/END marker)
+        // Write to .co-force/AGENTS.md (use regex to replace only within BEGIN/END markers)
         write_managed_block(".co-force/AGENTS.md", &md_content).await;
         
-        // Ghi kèm vào .cursorrules và .clauderules nếu file tồn tại
+        // Also write to .cursorrules and .clauderules if files exist
     }
 }
 ```
@@ -86,26 +86,27 @@ pub async fn run_doc_generator(
 ---
 
 ## 4. OS Process Manager (Spawn & Kill Agents)
-**Vị trí:** `crates/co-force-core/src/orchestration/process_mgr.rs`
+**Location:** `crates/co-force-core/src/orchestration/process_mgr.rs`
 
-Chịu trách nhiệm thực thi các lệnh hệ thống để đẻ ra các agent ẩn (Sub-agents).
+Responsible for executing system commands to spawn headless sub-agents (Sub-agents).
 
-### 4.1 Cấu trúc ProcessManager
+### 4.1 ProcessManager Structure
 ```rust
 use tokio::process::Command;
 
 pub struct ProcessManager;
 
 impl ProcessManager {
-    /// Spawn một agent CLI trong chế độ background (detached)
-    /// LƯU Ý (F-05/F-23): match hardcode dưới đây CHỈ là minh họa — bản thật đọc
-    /// command template từ config.toml [providers] (provider registry), không match trong Rust.
+    /// Spawns a CLI agent in background (detached) mode
+    /// NOTE (F-05/F-23): The hardcoded match below is strictly for illustration —
+    /// the real implementation reads the command template from config.toml [providers] (provider registry),
+    /// no hardcoded match in Rust.
     pub async fn spawn_agent(provider: &str, task_id: &str, context: &str) -> anyhow::Result<u32> {
         let mut cmd = match provider {
             "antigravity" => {
                 let mut c = Command::new("antigravity-cli");
                 c.arg("--task").arg(context);
-                c.arg("--auto-approve"); // Rất quan trọng: agent ẩn không được block hỏi user
+                c.arg("--auto-approve"); // Critical: background agent must not block for user input
                 c
             },
             "claude-code" => {
@@ -120,104 +121,104 @@ impl ProcessManager {
         let child = cmd.spawn()?;
         let pid = child.id().unwrap_or(0);
         
-        // Tuỳ chọn: Có thể spawn task để wait() child này nhằm dọn dẹp (reap) zombie process.
+        // Optional: Spawn task to wait() on child to reap zombie processes.
         Ok(pid)
     }
 }
 ```
 
-### 4.2 Use Case: Handover (Chạy tiếp gậy)
-> **⚠️ Flow dưới đây là bản gốc, đã được thay bằng §5 (cross-provider, escrow locks):** bước 2 "nhả toàn bộ lock" tạo lỗ hổng — agent thứ 3 chen vào claim files giữa lúc chuyển giao. Bản chốt: locks đi **escrow theo task** và chuyển atomic cho người kế nhiệm.
+### 4.2 Use Case: Handover (Task Transition)
+> **⚠️ The flow below is the original version, replaced by §5 (cross-provider, escrow locks):** step 2 "release all locks" created a vulnerability — a third agent could claim files during the handover gap. The finalized design utilizes **escrow locks tied to the task** and transfers them atomically to the successor.
 
-Khi nhận MCP Request `co_force_handover`:
-1. Use Case cập nhật Task Status thành `PendingHandover`, lưu `state_summary` vào task description.
-2. ~~Gọi `LockRepository::release_all_for_agent(agent_id)`~~ → locks vào escrow gắn task (§5.3).
-3. Gửi `WorkspaceEvent::HandoverRequested` lên Event Bus.
-4. Chọn target theo ma trận §5.4 (agent online khác → offer; hoặc spawn L2/L3).
-5. Trả về `safe_to_exit: true` cho Agent cũ để nó tự thoát.
+Upon receiving the `co_force_handover` MCP request:
+1. The Use Case updates the Task Status to `PendingHandover` and saves the `state_summary` in the task description.
+2. ~~Call `LockRepository::release_all_for_agent(agent_id)`~~ → locks enter escrow tied to the task (§5.3).
+3. Send a `WorkspaceEvent::HandoverRequested` event to the Event Bus.
+4. Select the target according to the §5.4 matrix (another online agent → offer; or spawn L2/L3).
+5. Return `safe_to_exit: true` to the old Agent, permitting it to exit safely.
 
 ---
 
-## 5. Cross-Provider Handover — kịch bản chuẩn: Claude CLI chạm rate limit, agy CLI tiếp quản
+## 5. Cross-Provider Handover — Standard Scenario: Claude CLI Hits Rate Limit, agy CLI Takes Over
 
-**Sự thật nền tảng:** conversation/context KHÔNG port được giữa 2 provider (`claude --resume` vô nghĩa với `agy`). Vì vậy "đem context sang" = **externalize toàn bộ trạng thái ra server + git**, và agent kế nhiệm tái tạo context từ đó. Đây chính là giá trị cốt lõi của Co-Force: context sống ở server, agent chỉ là worker tạm thời.
+**Fundamental Truth:** Conversation/context CANNOT be ported between two different providers (`claude --resume` is meaningless to `agy`). Therefore, "importing context" = **externalizing the entire state to the server + git**, and the succeeding agent recreates the context from there. This is the core value of Co-Force: the context lives on the server, the agent is just a temporary worker.
 
-### 5.1 Context được chuyển qua 5 kênh (không kênh nào phụ thuộc provider)
+### 5.1 Context Transferred via 5 Channels (None dependent on provider)
 
-| Kênh | Chứa gì | Ai ghi |
+| Channel | Contents | Author |
 | :--- | :--- | :--- |
-| Task record (DB) | spec, use cases, verification plan, revision, gate hiện tại | create_tasks + update_task |
-| **Handover package** (bảng `handovers`) | §5.2 — done/remaining, decisions, gotchas, next steps | Agent cũ lúc handover |
-| Activity stream | journal mọi tool call của agent cũ (append-only) | Tự động |
-| Memory (`recall`) | knowledge/gotchas đã distill | store_memory + nightly distill |
-| Code state (git) | WIP branch + commit_sha, hoặc working tree local | Agent cũ commit/push |
+| Task record (DB) | spec, use cases, verification plan, revision, current gate | create_tasks + update_task |
+| **Handover package** (table `handovers`) | §5.2 — done/remaining, decisions, gotchas, next steps | Old agent during handover |
+| Activity stream | journal of all tool calls by the old agent (append-only) | Automatic |
+| Memory (`recall`) | distilled knowledge/gotchas | store_memory + nightly distillation |
+| Code state (git) | WIP branch + commit_sha, or local working tree | Old agent commit/push |
 
-### 5.2 Handover package (validated — chất lượng bàn giao cũng là quality gate)
+### 5.2 Handover Package (Validated — hand-off quality is also a quality gate)
 
 ```json
 {
   "reason": "rate_limit",                     // rate_limit | context_exhaustion | session_end | manual
-  "provider_cooldown_until": "2026-07-08T21:00:00Z",  // thời điểm limit reset (nếu CLI báo)
-  "progress": {"done": ["API skeleton", "3/5 tests"], "remaining": ["wire auth", "2 tests còn fail"]},
-  "decisions": [{"what": "dùng middleware X", "why": "..."}],
-  "gotchas": ["test Y flaky khi chạy song song", "đừng đổi signature Z — client cũ phụ thuộc"],
+  "provider_cooldown_until": "2026-07-08T21:00:00Z",  // cooldown reset timestamp (if reported by CLI)
+  "progress": {"done": ["API skeleton", "3/5 tests"], "remaining": ["wire auth", "2 failing tests"]},
+  "decisions": [{"what": "use middleware X", "why": "..."}],
+  "gotchas": ["test Y is flaky in parallel run", "do not modify signature Z — old client depends on it"],
   "code_state": {"kind": "pushed_wip", "branch": "co-force/t42", "commit_sha": "a1b2c3",
                   "files_touched": ["src/auth.rs", "tests/auth_test.rs"]},
-  "next_steps": ["chạy cargo test -p core trước", "bắt đầu từ TODO trong auth.rs:88"]
+  "next_steps": ["run cargo test -p core first", "start from the TODO in auth.rs:88"]
 }
 ```
 
-Server dùng **reasoner validate độ đầy đủ** (thiếu `remaining`/`next_steps` hoặc mơ hồ → lỗi `HANDOVER_INCOMPLETE` + recovery_action chỉ rõ thiếu gì) — bàn giao cẩu thả bị chặn như mọi gate khác.
+The server uses the **reasoner to validate completion** (missing `remaining`/`next_steps` or ambiguity → triggers a `HANDOVER_INCOMPLETE` error + a recovery action pointing to the missing fields) — sloppy handovers are blocked just like any other gate.
 
-### 5.3 Flow chủ động (Claude thấy cảnh báo rate limit — còn gọi được tool)
+### 5.3 Active Flow (Claude detects rate limit — can still call tools)
 
-1. **Rules dạy handover SỚM** (Plan 09): thấy cảnh báo limit đầu tiên → KHÔNG bắt đầu việc mới; commit + push WIP → gọi `co_force_handover(taskId, reason="rate_limit", resetAt, package)`.
-2. Server validate package → task → `pending_handover`; **locks vào escrow gắn task** (không nhả tự do — chuyển atomic cho người kế nhiệm, agent thứ 3 không chen được).
-3. Ghi **provider cooldown**: `provider_status[machine][claude-code].rate_limited_until = resetAt` → plan_team/staffing/delegation tránh giao việc cho provider này đến khi hết cooldown (Plan 08).
-4. Chọn target theo §5.4 → agent kế nhiệm nhận `handover_offer` qua inbox (agy đang online cùng feature nhận NGAY nếu đang `wait_events`).
-5. agy accept → server chuyển **assignee + locks atomic**, task về `in_progress`; response kèm package + `protocol_next_step: "Read package.next_steps, checkout branch co-force/t42, run co_force_recall on the feature topic before coding."`
-6. Claude nhận `safe_to_exit: true`. Hết cooldown → Claude check-in lại nhận việc mới bình thường.
+1. **Rules teach early handover** (Plan 09): upon the first rate limit warning → DO NOT start new work; commit + push WIP → call `co_force_handover(taskId, reason="rate_limit", resetAt, package)`.
+2. The server validates the package → sets task status to `pending_handover`; **locks are placed in escrow tied to the task** (no loose releases — transferred atomically to the successor, preventing a third agent from claiming them).
+3. Record **provider cooldown**: `provider_status[machine][claude-code].rate_limited_until = resetAt` → plan_team/staffing/delegation avoids assigning tasks to this provider until the cooldown expires (Plan 08).
+4. Select target according to §5.4 → the successor agent receives a `handover_offer` via the inbox (an online agy agent working on the same feature receives it IMMEDIATELY if it is in `wait_events`).
+5. agy accepts → the server transfers **assignee + locks atomically**, task returns to `in_progress`; response contains the package + `protocol_next_step: "Read package.next_steps, checkout branch co-force/t42, run co_force_recall on the feature topic before coding."`
+6. Claude receives `safe_to_exit: true`. Once the cooldown expires → Claude checks in again and accepts new tasks normally.
 
-### 5.4 Ma trận chọn target (mở rộng architecture §5.4)
+### 5.4 Target Selection Matrix (expands on architecture §5.4)
 
-| Điều kiện | Target |
+| Condition | Target |
 | :--- | :--- |
-| Agent provider khác đang **online** cùng workspace, có capacity (agy trong use case này) | **Offer qua inbox** — nhanh nhất, agy đã có sẵn context feature qua các lần pulse/inbox trước |
-| Không ai online, code **đã push** WIP | **L3 worker** provider khác (đọc từ mirror @ commit_sha) |
-| Code **local chưa push được** (chưa kịp/không có remote) | **L2 spawn directive cho agy trên CÙNG MÁY** — đọc thẳng working tree; directive phải được Claude chạy TRƯỚC khi cạn hẳn (lý do rules dạy handover sớm) |
-| Không phương án nào khả thi | Task đứng `pending_handover` + alert user + cooldown ghi nhận; timeout → về backlog (Plan 07 §3) |
+| Another provider agent is **online** in the workspace, with capacity (agy in this use case) | **Offer via inbox** — fastest, agy already has feature context from previous pulses/inbox updates |
+| No one is online, code **has been pushed** to WIP | **L3 worker** of a different provider (reads from mirror @ commit_sha) |
+| Code is **local and not pushed** (no remote / not pushed yet) | **L2 spawn directive for agy on the SAME MACHINE** — reads the working tree directly; directive must be executed by Claude BEFORE it runs out of limits entirely (why rules teach early handover) |
+| No feasible options | Task stands at `pending_handover` + alerts user + cooldown recorded; timeout → returns to backlog (Plan 07 §3) |
 
-### 5.5 Flow bị động (Claude chết đột ngột giữa chừng — không kịp handover)
+### 5.5 Passive Flow (Claude dies suddenly mid-way — no time to handover)
 
-1. Session drop → grace 2 phút → reclaim (architecture §9). Điểm mới: reclaim **không chỉ trả task về backlog** — nếu có agent online provider khác → tự động gửi `handover_offer` với **package tổng hợp bởi server**: task record + activity stream gần nhất + git state (không có summary xịn của agent cũ).
-2. Đây là lý do rules bắt `update_task` ghi progress notes thường xuyên — **mỗi update_task là bảo hiểm handover**; chết đột ngột thì journal chính là bàn giao.
-3. Phát hiện nguyên nhân: L2/L3 worker exit với stderr chứa pattern rate-limit của provider (parser per provider — Plan 08 C4 mở rộng) → server ghi cooldown như flow chủ động.
+1. Session drops → 2-minute grace period → reclaim daemon runs (architecture §9). New feature: reclaim **does not just return tasks to the backlog** — if there is an online agent of a different provider → automatically sends a `handover_offer` with a **server-synthesized package**: task record + recent activity stream + git state (lacks the clean summary from the old agent).
+2. This is why rules mandate writing progress notes via `update_task` frequently — **every update_task is handover insurance**; if the agent dies suddenly, the journal is the handover.
+3. Detect cause: L2/L3 worker exits with stderr containing the provider's rate-limit pattern (one parser per provider — Plan 08 C4 extended) → server records cooldown identical to the active flow.
 
-### 5.6 Schema bổ sung (WS-A)
+### 5.6 Additional Schema (WS-A)
 
 ```sql
 CREATE TABLE IF NOT EXISTS handovers (
     handover_id  TEXT PRIMARY KEY,
     task_id      TEXT NOT NULL,
     from_agent_id TEXT NOT NULL,
-    to_agent_id  TEXT,              -- NULL đến khi có người nhận
+    to_agent_id  TEXT,              -- NULL until accepted
     reason       TEXT NOT NULL,     -- rate_limit | context_exhaustion | session_end | manual
-    package      TEXT NOT NULL,     -- JSON §5.2 (đã qua validate)
+    package      TEXT NOT NULL,     -- JSON §5.2 (validated)
     provider_cooldown_until TIMESTAMP,
     created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     accepted_at  TIMESTAMP,
     FOREIGN KEY (task_id) REFERENCES tasks(task_id)
 );
--- provider_status (trong server.db): machine_id, provider, rate_limited_until, last_error
+-- provider_status (in server.db): machine_id, provider, rate_limited_until, last_error
 ```
 
 ---
 
-## 6. Trình tự Triển khai (Step-by-Step)
-1. Thêm `tokio::sync::broadcast` vào Core, định nghĩa Enum `WorkspaceEvent`.
-2. Truyền `Sender` vào các Use Cases, bổ sung lệnh `send()` ở cuối mỗi Use Case.
-3. Viết module `doc_generator.rs`, triển khai vòng lặp `recv()` và logic replace string bằng Regex (tôn trọng các block code thủ công của user).
-4. Viết module `process_mgr.rs` — command templates lấy từ **provider registry trong config** (quyết định F-05, không hardcode provider trong Rust). Spec đã verify cho từng CLI (Claude Code `claude -p`, Codex `codex exec`, Antigravity `agy -p`, kèm caveats C1–C4): **Plan 08 §3**.
-5. Handover use case theo §5: bảng `handovers` + `provider_status` (server.db), lock escrow + chuyển atomic (unit test: agent thứ 3 không claim được trong lúc pending_handover), package validator qua reasoner (mock), target matrix §5.4, cooldown tracking.
-6. Reclaim mở rộng (§5.5): re-dispatch tự động sang agent provider khác + package server tổng hợp; stderr rate-limit parser per provider.
-7. Viết Integration Test: (a) Mock OS Command đảm bảo Handover kích hoạt `spawn`; (b) **kịch bản chuẩn cross-provider**: mock 2 sessions (claude + agy), claude handover(reason=rate_limit) → agy nhận offer, locks chuyển atomic, task tiếp tục không rơi gate nào; (c) claude kill -9 → sau grace, agy nhận offer với package server tổng hợp.
+## 6. Steps to Implement (Step-by-Step)
+1. Add `tokio::sync::broadcast` to Core, defining the `WorkspaceEvent` enum.
+2. Pass the `Sender` into the Use Cases, appending a `send()` call at the end of each Use Case execution.
+3. Write `doc_generator.rs`, implementing the `recv()` loop and string replacement using Regex (respecting user-made code blocks).
+4. Write the `process_mgr.rs` module — command templates are retrieved from the **provider registry in config** (F-05 decision, no hardcoded providers in Rust). Verified specs for each CLI (Claude Code `claude -p`, Codex `codex exec`, Antigravity `agy -p`, with caveats C1–C4): **Plan 08 §3**.
+5. Handover use case according to §5: `handovers` + `provider_status` (server.db) tables, lock escrow + atomic transfer (unit test: a third agent cannot claim locks during pending_handover), package validator via reasoner (mock), target matrix §5.4, cooldown tracking.
+6. Extended reclaim (§5.5): auto-redispatch to another provider agent + server-synthesized package; stderr rate-limit parser per provider.
+7. Write Integration Tests: (a) Mock OS Command to ensure Handover triggers `spawn`; (b) **cross-provider standard scenario**: mock 2 sessions (claude + agy), claude handover(reason="rate_limit") → agy receives the offer, locks transfer atomically, task continues without dropping gates; (c) claude kill -9 → after grace period, agy receives the offer with the server-synthesized package.

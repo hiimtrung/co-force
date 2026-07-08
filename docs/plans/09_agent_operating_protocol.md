@@ -1,31 +1,31 @@
-# Kế Hoạch Triển Khai Chi Tiết: 09 - Agent Operating Protocol (Onboarding & Hành vi Đồng nhất)
+# Detailed Implementation Plan: 09 - Agent Operating Protocol (Onboarding & Uniform Behavior)
 
-**Status:** Ready for Implementation (bổ trợ WS-B/C/G — chốt 2026-07-08)
-**Target:** `crates/co-force-core/src/workspace/protocol_templates/` (rules template + guide renderer), tool descriptions trong `co-force-mcp/src/tools/`
-**Trả lời câu hỏi:** *Sau khi client setup xong, Claude Code (hay CLI bất kỳ) làm sao biết dùng tool nào để làm gì, điểm khởi đầu ở đâu, và làm sao mọi agent hành xử giống nhau?*
+**Status:** Ready for Implementation (supports WS-B/C/G — finalized 2026-07-08)
+**Target:** `crates/co-force-core/src/workspace/protocol_templates/` (rules template + guide renderer), tool descriptions in `co-force-mcp/src/tools/`
+**Target Question:** *After client setup is complete, how does Claude Code (or any CLI agent) know which tool to use for what, where to start, and how to behave uniformly?*
 
-Thay thế URD §9.3 (template cũ có chỉ dẫn sai: dọa "OS Permission Denied"/chmod ban không còn tồn tại sau khi Lớp 4 đổi hình thái in-band — architecture §5.6; flow cũ `update_task(completed)` nay trả `GATE_VIOLATION`).
+Replaces URD §9.3 (the old template contained incorrect instructions: threats of "OS Permission Denied" / chmod bans no longer exist since Layer 4 was changed to go in-band — architecture §5.6; the old flow where `update_task(completed)` was called now returns `GATE_VIOLATION`).
 
 ---
 
-## 1. Chuỗi khám phá của một agent lạnh (cold start) — 4 điểm chạm
+## 1. Discovery Sequence for a Cold Agent (Cold Start) — 4 Touchpoints
 
-Một agent mới mở phiên không biết gì về Co-Force. Nó "học" protocol qua đúng 4 điểm chạm, theo thứ tự thời gian:
+A new agent starting a session knows nothing about Co-Force. It "learns" the protocol through exactly 4 touchpoints, in chronological order:
 
-| # | Điểm chạm | Khi nào | Agent nhận được gì |
+| # | Touchpoint | When | What the Agent Receives |
 | :- | :--- | :--- | :--- |
-| 1 | **Rules file** (`AGENTS.md`/`CLAUDE.md`/`.cursorrules` — managed block §2, enrollment script tiêm) | Client tự nạp vào system context khi mở project | Điểm khởi đầu (check_in), vòng đời task, quy tắc hành vi, bản đồ tool §2.4 |
-| 2 | **Tool descriptions** (Lớp 2 — §3) | Khi client nạp danh sách 39 tools từ server | Mỗi tool tự nói khi nào PHẢI dùng nó ("MANDATORY: call first...") |
-| 3 | **`co_force_check_in` response** | Tool call đầu tiên của phiên | Pending tasks + team online + inbox tồn + `protocol_next_step` + `onboarding: true` lần đầu → được dẫn tới `co_force_guide()` |
-| 4 | **Mọi tool response sau đó** (envelope §6.2 architecture) | Suốt phiên | `protocol_next_step` chỉ hành động kế tiếp, `inbox` đẩy việc team, error + `recovery_action` tự sửa sai |
+| 1 | **Rules File** (`AGENTS.md`/`CLAUDE.md`/`.cursorrules` — managed block §2, injected by enrollment script) | The client automatically loads it into its system context when opening the project | Check-in starting point, task lifecycle, uniform behavior rules, tool map §2.4 |
+| 2 | **Tool Descriptions** (Layer 2 — §3) | When the client loads the list of 39 tools from the server | Each tool explicitly states when it MUST be used ("MANDATORY: call first...") |
+| 3 | **`co_force_check_in` Response** | First tool call of the session | Pending tasks + team online + unread inbox + `protocol_next_step` + `onboarding: true` on first run → directed to `co_force_guide()` |
+| 4 | **Subsequent Tool Responses** (envelope §6.2 architecture) | Throughout the session | `protocol_next_step` indicating the next action, `inbox` delivering team work, error + `recovery_action` for self-correction |
 
-Nguyên tắc thiết kế: **agent không cần nhớ protocol** — protocol tự tìm đến agent ở mọi bước. Rules file chỉ cần đủ để bước 3 xảy ra; từ đó server dẫn dắt in-band.
+Design Principle: **the agent does not need to memorize the protocol** — the protocol finds the agent at every step. The rules file only needs to be sufficient for step 3 to occur; from there, the server guides the agent in-band.
 
 ---
 
-## 2. Rules Template chốt (managed block — enrollment script tiêm, Plan 05 §3 bước 5)
+## 2. Finalized Rules Template (Managed Block — Injected by Enrollment Script, Plan 05 §3 step 5)
 
-Nguyên tắc viết: (a) **tiếng Anh** (mọi CLI tuân thủ tốt nhất); (b) **chỉ hứa những gì server thật sự enforce** — không dọa suông kiểu "OS sẽ chặn" (agent phát hiện nói dối sẽ mất tin toàn bộ rules); (c) ngắn đủ nằm trong context mọi phiên, chi tiết dồn cho `co_force_guide()`; (d) có version để re-enroll cập nhật.
+Writing Principles: (a) **English** (maximizes compliance across all CLI agents); (b) **only promise what the server actually enforces** — no empty threats like "the OS will block you" (agents detecting false rules lose trust in the entire protocol); (c) short enough to fit in the context of every session, routing details to `co_force_guide()`; (d) versioned to allow updates via re-enrollment.
 
 ```markdown
 <!-- CO-FORCE:BEGIN v1 (managed block — do not edit; re-run enrollment one-liner to update) -->
@@ -100,7 +100,7 @@ draft → spec_review (auto LLM recheck) → awaiting_approval (USER approves)
 | Big design decision | `request_critique` BEFORE coding |
 | Need help / spawn worker | `delegate_task` / `co_force_spawn_agent` |
 | Solo with a big backlog | `register_role(pm)` → `plan_team` → spawn team |
-| Context nearly full / rate-limit warning | push WIP → `handover` (package đầy đủ) |
+| Context nearly full / rate-limit warning | push WIP → `handover` (package contents) |
 | Learned something durable | `store_memory` |
 | Who is doing what | `list_agents` / `workspace_status` / `whoami` |
 
@@ -108,60 +108,62 @@ Server: {{server_url}} · All tool names are prefixed `co_force_`.
 <!-- CO-FORCE:END -->
 ```
 
-Biến template: `{{workspace_name}}`, `{{server_url}}` (+ `{{role_hint}}` nếu máy được enroll với role cố định). Cùng một template cho mọi client — khác biệt duy nhất là file đích (`AGENTS.md` dùng chung cho Claude Code/Codex/agy; `.cursorrules` cho Cursor — Plan 08 §3 cột rules).
+Template variables: `{{workspace_name}}`, `{{server_url}}` (+ `{{role_hint}}` if the machine is enrolled with a fixed role). The same template applies to all clients — the only difference is the target file (`AGENTS.md` shared by Claude Code/Codex/agy; `.cursorrules` for Cursor — Plan 08 §3 rules column).
 
 ---
 
-## 3. Lớp 2 — Chuẩn viết Tool Descriptions (nhất quán với rules)
+## 3. Layer 2 — Standard for Writing Tool Descriptions (Aligned with Rules)
 
-Tool description là "rules tại điểm sử dụng" — agent đọc nó ngay lúc chọn tool. Chuẩn bắt buộc khi implement (`co-force-mcp/src/tools/`):
+Tool descriptions are "rules at the point of consumption" — the agent reads them when selecting tools. Mandatory standard for implementation (`co-force-mcp/src/tools/`):
 
-1. **Tool cổng vào nói rõ tính bắt buộc:** `check_in` = "MANDATORY first call of every session. All other tools fail with CHECK_IN_REQUIRED until called."
-2. **Tool có precondition nói rõ precondition:** `lock_files` = "MANDATORY before editing any file. Requires an approved task."; `submit_verification` = "The ONLY way to move a task toward completed. Requires real test evidence + commit_sha."
-3. **Tool nguy hiểm nói rõ hậu quả:** `update_task` = "Cannot set completed (GATE_VIOLATION) — use submit_verification."
-4. **Không hứa điều server không làm** (đồng bộ nguyên tắc §2b).
-5. Description là contract — đổi description = đổi protocol → cùng PR phải cập nhật template §2 và guide §4 nếu lệch.
+1. **Entry tool explicitly declares mandatory nature:** `check_in` = "MANDATORY first call of every session. All other tools fail with CHECK_IN_REQUIRED until called."
+2. **Tool with preconditions explicitly states them:** `lock_files` = "MANDATORY before editing any file. Requires an approved task."; `submit_verification` = "The ONLY way to move a task toward completed. Requires real test evidence + commit_sha."
+3. **High-risk tools explicitly state consequences:** `update_task` = "Cannot set completed (GATE_VIOLATION) — use submit_verification."
+4. **Never promise what the server does not enforce** (aligning with §2b).
+5. The description is a contract — modifying a description changes the protocol → the same PR must update the template §2 and guide §4 to keep them aligned.
 
-## 4. `co_force_guide()` — Onboarding động (chi tiết mà rules tĩnh không chứa)
+## 4. `co_force_guide()` — Dynamic Onboarding (Details omitted in static rules)
 
-Server render theo trạng thái workspace thật (không phải markdown tĩnh):
-- Quality policy đang bật (reviews_required, reviewer_must_differ, evidence kinds) — "vì sao task của bạn cần X".
-- Team hiện tại: agents + roles + ai đang giữ lock nào; task backlog đang chờ claim.
-- **3 ví dụ tool-call đúng chuẩn** bám đúng policy hiện hành (create_tasks đủ trường, submit_verification đủ evidence, submit_review đủ findings schema).
-- Lỗi phổ biến → recovery (bảng error codes architecture §6.3 rút gọn).
-- Trigger: response check_in đầu tiên của agent mới có `onboarding: true` + `protocol_next_step: "Call co_force_guide() once before taking any task."`
+The server renders this based on the real workspace state (not static markdown):
+- Active quality policy (reviews_required, reviewer_must_differ, evidence kinds) — "why your task requires X".
+- Current team: agents + roles + who holds which lock; task backlog awaiting claim.
+- **3 examples of standard tool calls** matching the active policy (create_tasks with all fields, submit_verification with complete evidence, submit_review with findings schema).
+- Common errors → recovery actions (abridged error codes from architecture §6.3).
+- Trigger: the check_in response of a new agent contains `onboarding: true` + `protocol_next_step: "Call co_force_guide() once before taking any task."`
 
-## 5. Playbook theo role (server gửi qua guide + review_request payload)
+## 5. Playbook by Role (Sent by Server via Guide + review_request Payload)
 
-| Role | Vòng lặp chuẩn |
+| Role | Standard Loop |
 | :--- | :--- |
-| `developer` | check_in → recall → (claim task approved hoặc create_tasks) → lock → code → submit_verification → xử lý findings → store_memory |
-| `reviewer` (kể cả worker L3) | check_in(role=reviewer) → `wait_events` loop → nhận review_request (kèm assist checklist) → đọc code thật (worktree/workspace) → tự chạy test độc lập → submit_review(findings có file/line/severity) → quay lại wait_events |
-| `critic` | nhận critique_request → submit_critique(position, arguments, risks, alternatives) — phản biện thật, không lịch sự xã giao |
-| `pm`/`architect` | create_tasks + request_critique trước quyết định lớn; không tự approve. **PM solo-bootstrap (Plan 10):** plan_team → trình user estimate → spawn subagents → vòng lặp giám sát `wait_events` (xử lý stall/respawn, gom câu hỏi trình user 1 lần) — **không code khi team đang chạy** |
+| `developer` | check_in → recall → (claim approved task or create_tasks) → lock → code → submit_verification → handle findings → store_memory |
+| `reviewer` (including L3 workers) | check_in(role=reviewer) → `wait_events` loop → receives review_request (with assist checklist) → reads actual code (worktree/workspace) → runs tests independently → submit_review(findings with file/line/severity) → returns to wait_events |
+| `critic` | receives critique_request → submit_critique(position, arguments, risks, alternatives) — honest critiques, no polite pleasantries |
+| `pm`/`architect` | create_tasks + request_critique before big decisions; does not self-approve. **PM solo-bootstrap (Plan 10):** plan_team → presents estimate to user → spawns subagents → monitoring loop `wait_events` (handles stalls/respawns, aggregates questions for user) — **does not code while the team is running** |
 
-## 6. Ma trận "hành vi đồng nhất" — mỗi quy tắc được lớp nào ép
+## 6. "Uniform Behavior" Matrix — Enforcement Layers
 
-Hành vi đồng nhất KHÔNG dựa vào thiện chí LLM — mỗi quy tắc trong §2 có ít nhất một lớp cưỡng chế phía server:
+Uniform behavior does not rely on LLM goodwill — every rule in §2 has at least one enforcement layer server-side:
 
-| Quy tắc | Lớp 1 (rules) | Lớp 2 (descriptions) | Lớp 3 (interlocking server) | Lớp 4 (in-band state) |
+| Rule | Layer 1 (Rules) | Layer 2 (Descriptions) | Layer 3 (Interlocking Server) | Layer 4 (In-band State) |
 | :--- | :---: | :---: | :---: | :---: |
-| Check-in trước mọi việc | ✓ | ✓ | ✓ `CHECK_IN_REQUIRED` chặn 37 tools còn lại | |
-| Lock trước khi sửa | ✓ | ✓ | ✓ `LOCK_CONFLICT` khi claim trùng | ✓ pulse hiện lock của team |
-| Không tự set completed | ✓ | ✓ | ✓ `GATE_VIOLATION` | |
-| Evidence thật, đúng revision | ✓ | ✓ | ✓ validator + `EVIDENCE_STALE` (F-21) | |
-| Không tự review bài mình | ✓ | | ✓ separation-of-duties server-side | |
-| Xử lý inbox trước | ✓ | | | ✓ inbox + `protocol_next_step` mọi response |
-| Tự sửa sai theo recovery_action | ✓ | | ✓ mọi error đều kèm recovery_action | |
-| Handover thay vì bỏ ngang | ✓ | ✓ | ✓ reclaim sau grace 2' nếu bỏ ngang | ✓ pulse cảnh báo |
+| Check-in first | ✓ | ✓ | ✓ `CHECK_IN_REQUIRED` blocks remaining 37 tools | |
+| Lock before edit | ✓ | ✓ | ✓ `LOCK_CONFLICT` on duplicate claims | ✓ pulse shows team locks |
+| Do not self-set completed | ✓ | ✓ | ✓ `GATE_VIOLATION` | |
+| Real evidence on correct revision | ✓ | ✓ | ✓ validator + `EVIDENCE_STALE` (F-21) | |
+| Do not self-review | ✓ | | ✓ server-side separation of duties | |
+| Process inbox first | ✓ | | | ✓ inbox + `protocol_next_step` on all responses |
+| Self-correct via recovery_action | ✓ | | ✓ every error returns a recovery_action | |
+| Handover instead of abandoning | ✓ | ✓ | ✓ reclaim after 2-minute grace period | ✓ pulse warning |
 
-→ Agent "bướng" nhất cũng hội tụ về đúng flow vì **con đường sai đều bị chặn kèm chỉ dẫn con đường đúng** (self-correction loop). Rules Lớp 1 chỉ giúp hội tụ nhanh (ít lượt lỗi hơn), không phải hàng rào duy nhất.
+→ Even the most stubborn agent converges to the correct flow because **incorrect paths are blocked and returned with guiding instructions to the correct path** (self-correction loop). Layer 1 rules only accelerate convergence (fewer error cycles), they are not the sole barrier.
 
-## 7. Trình tự Triển khai (Step-by-Step)
+---
 
-1. Template §2 thành file trong `workspace/protocol_templates/rules_v1.md` (kèm version constant); writer managed-block dùng chung với Plan 03/05; golden-file test render với biến mẫu.
-2. Chuẩn hóa 39 tool descriptions theo §3 (bảng description nằm cạnh handler; review chéo với template để không lệch).
-3. `co_force_guide` renderer (§4): input = quality policy + team snapshot + backlog; output markdown; unit test với policy khác nhau cho ra ví dụ khác nhau.
-4. Cờ `onboarding: true` trong check_in response (agent chưa từng check-in workspace này) + `protocol_next_step` trỏ guide.
-5. Playbook §5: nhúng vào guide theo role; review_request payload kèm checklist + nhắc quy trình reviewer.
-6. **E2E "cold agent"** (nghiệm thu của plan này): container sạch → enroll → mở Claude Code thật với 1 prompt trung tính ("add a hello endpoint") → assert agent tự: check_in → recall → create_tasks → dừng chờ approve (không sửa file trước lock) — lặp lại với Codex + agy (Plan 08).
+## 7. Steps to Implement (Step-by-Step)
+
+1. Save the §2 template as a file in `workspace/protocol_templates/rules_v1.md` (with a version constant); the managed-block writer is shared with Plan 03/05; golden-file test rendering with sample variables.
+2. Standardize the 39 tool descriptions according to §3 (descriptions reside next to their handlers; cross-review with the template to keep them aligned).
+3. `co_force_guide` renderer (§4): input = quality policy + team snapshot + backlog; outputs markdown; unit tests with different policies output different examples.
+4. Include `onboarding: true` flag in the check_in response (if the agent has not checked into this workspace before) + point `protocol_next_step` to the guide.
+5. Playbook §5: embed into the guide based on role; review_request payload includes checklist + prompts reviewer process.
+6. **E2E "cold agent"** (acceptance criteria for this plan): clean container → enroll → open real Claude Code with a neutral prompt ("add a hello endpoint") → assert agent automatically: check_in → recall → create_tasks → halts waiting for approval (no file modification before locking) — repeated for Codex + agy (Plan 08).

@@ -1,88 +1,88 @@
-# Kế Hoạch Triển Khai Chi Tiết: 07 - Quality Engine & Bidirectional A2A
+# Detailed Implementation Plan: 07 - Quality Engine & Bidirectional A2A
 
 **Status:** Ready for Implementation (WS-C — critical path)
-**Target:** `crates/co-force-core/src/quality/`, `src/messaging/`, mở rộng `engine/`
+**Target:** `crates/co-force-core/src/quality/`, `src/messaging/`, extending `engine/`
 
-## 1. Context & Mục Tiêu
+## 1. Context & Objectives
 
-Đây là **lý do tồn tại của Co-Force**: biến một nhóm agent rời rạc thành một **product team thật** — có vai trò, có phản biện, có review chéo, có bằng chứng nghiệm thu. Mục tiêu không phải làm nhanh hơn mà là **đẩy chất lượng đầu ra của LLM đến cực hạn** bằng cơ chế đã được chứng minh ở team người: *không ai tự chấm bài của chính mình, và mọi claim phải có evidence*.
+This is the **raison d'être of Co-Force**: turning a loose group of agents into a **real product team** — with distinct roles, constructive critiques, cross-reviews, and verification evidence. The goal is not to execute faster but to **drive the output quality of LLMs to the absolute limit** using mechanisms proven in human teams: *no one grades their own work, and every claim must be backed by evidence*.
 
-Cơ sở lý luận (đã phản ánh trong AGENTS.md của chính repo này): LLM đơn lẻ có blind spots hệ thống — tự tin sai, bỏ edge case, khai man "đã test". Ba đòn bẩy chất lượng mà server ép buộc được:
-1. **Separation of duties** — agent viết code ≠ agent review ≠ (LLM) recheck spec.
-2. **Evidence, not claims** — `completed` chỉ tồn tại sau khi có verification record máy-đọc-được.
-3. **Adversarial critique** — nhiều agent/model khác nhau phản biện cùng một artifact; bất đồng là tín hiệu, không phải nhiễu.
+Theoretical Basis (reflected in this repository's own `AGENTS.md`): Single LLMs suffer from systematic blind spots — false confidence, missed edge cases, and claiming "it's already tested" when it isn't. The three quality levers enforced by the server are:
+1. **Separation of Duties** — the agent writing the code ≠ the agent reviewing the code ≠ the (LLM) rechecking the specification.
+2. **Evidence, Not Claims** — a task cannot be set to `completed` without a machine-readable verification record.
+3. **Adversarial Critique** — multiple distinct agents/models critiquing the same artifact; disagreement is a signal, not noise.
 
 ---
 
 ## 2. Role System & Team Staffing
 
 ### 2.1 Roles
-`role` khai báo lúc check-in (hoặc gán bởi user/dashboard): `pm` | `architect` | `developer` | `reviewer` | `qa` | `researcher`. Một agent có thể nhiều role; **ràng buộc separation áp theo task**: agent đã đóng vai developer của task X không được nhận review/QA của chính task X (enforce ở server, không dựa vào thiện chí LLM).
+Roles are declared during check-in (or assigned by the user/dashboard): `pm` | `architect` | `developer` | `reviewer` | `qa` | `researcher`. An agent can hold multiple roles; **separation of duties is enforced at the task level**: the agent who acted as the developer for task X is barred from acting as the reviewer or QA for task X (enforced server-side, not relying on LLM goodwill).
 
-### 2.2 Auto-staffing (liên kết Plan 03)
-Khi task tới gate cần role chưa có agent online đảm nhận:
-1. Server tìm agent online khác role phù hợp → gửi review request qua inbox.
-2. Không có → **spawn** agent mới với role đó qua **Lane 3 worker pool** — headless trên server, đọc code từ git worktree (architecture.md §5.3; provider registry **Plan 08**, ưu tiên **provider/model KHÁC** với agent tác giả để tăng diversity phản biện — với 3 subscription CLIs (Claude/Codex/agy) diversity picker phủ Anthropic ↔ OpenAI ↔ Google trước khi lặp cùng provider).
-3. Không spawn được → task đứng ở gate + banner dashboard + alert. **Không bao giờ tự bỏ qua gate.**
+### 2.2 Auto-staffing (aligned with Plan 03)
+When a task reaches a gate requiring a role that no currently online agent possesses:
+1. The server searches for another online agent with a matching role → sends a review request via the inbox.
+2. If none exist → **spawns** a new agent with that role via the **Lane 3 worker pool** — headless on the server, reading code from a git worktree (architecture.md §5.3; provider registry **Plan 08**, prioritizing a **DIFFERENT provider/model** than the authoring agent to maximize critique diversity — with 3 CLI subscriptions (Claude/Codex/agy), the diversity picker covers Anthropic ↔ OpenAI ↔ Google before repeating a provider).
+3. If spawning fails → the task halts at the gate + displays a banner on the dashboard + triggers an alert. **Never bypass a gate.**
 
-**Nhánh solo (Plan 10):** khi workspace chỉ có 1 agent và backlog vượt ngưỡng, việc staffing không chờ đến lúc kẹt gate — agent gốc được nudge đôn làm PM ngay từ đầu (`co_force_plan_team` estimate dev/reviewer/qa/ba → spawn L2 cùng máy hoặc L3 provider khác). Review chéo trong solo chạy giữa các **identity** khác nhau (`reviewer_must_differ="agent"` — hợp lệ theo validator §8); diversity mô hình bù bằng reasoner server-side + reviewer L3 provider khác nếu worker pool bật.
+**Solo Workstream (Plan 10):** When the workspace has only 1 agent and the backlog exceeds the threshold, staffing does not wait for a gate block — the original agent is nudged to promote itself to PM from the start (`co_force_plan_team` estimates dev/reviewer/qa/ba → spawns L2 locally or L3 on another provider). Cross-reviews in solo mode run between **distinct identities** (`reviewer_must_differ="agent"` — valid under the §8 validator); model diversity is supplemented by the server-side reasoner + L3 reviewer from a different provider if the worker pool is active.
 
 ---
 
-## 3. Task State Machine mở rộng (thay thế TaskStatus cũ)
+## 3. Extended Task State Machine (replaces old TaskStatus)
 
 ```mermaid
 stateDiagram-v2
     [*] --> draft: create_tasks
-    draft --> spec_review: submit (tự động)
-    spec_review --> draft: recheck tìm ra gaps<br/>(LLM reasoner + questions)
-    spec_review --> awaiting_approval: recheck pass
-    awaiting_approval --> approved: user approve<br/>(dashboard hoặc qua agent)
-    approved --> in_progress: agent claim + lock files
-    in_progress --> verification: submit_verification<br/>(BẮT BUỘC kèm evidence)
-    verification --> in_progress: evidence không đạt<br/>(thiếu test/fail)
-    verification --> code_review: evidence hợp lệ
-    code_review --> rework: review có findings<br/>(blocking)
-    rework --> in_progress: agent nhận findings
-    code_review --> completed: đủ số approve<br/>theo quality policy
+    draft --> spec_review: submit (automatic)
+    spec_review --> draft: recheck finds gaps<br/>(LLM reasoner + questions)
+    spec_review --> awaiting_approval: recheck passes
+    awaiting_approval --> approved: user approves<br/>(via dashboard or agent)
+    approved --> in_progress: agent claims + locks files
+    in_progress --> verification: submit_verification<br/>(REQUIRED evidence)
+    verification --> in_progress: evidence invalid<br/>(missing tests/failure)
+    verification --> code_review: evidence valid
+    code_review --> rework: review returns findings<br/>(blocking)
+    rework --> in_progress: agent accepts findings
+    code_review --> completed: approvals met<br/>per quality policy
     completed --> [*]: store_memory + distill
-    in_progress --> blocked: dependency fail
-    blocked --> in_progress: dependency resolved<br/>(task chặn hoàn thành / user gỡ)
+    in_progress --> blocked: dependency fails
+    blocked --> in_progress: dependency resolved<br/>(blocking task completed / user cleared)
     in_progress --> pending_handover: handover
-    pending_handover --> in_progress: agent mới nhận<br/>(L2/L3, giữ state_summary)
-    pending_handover --> approved: timeout không ai nhận<br/>→ về backlog, alert
-    awaiting_approval --> draft: user reject<br/>(kèm lý do → agent sửa spec)
-    draft --> cancelled: user/admin hủy
-    approved --> cancelled: user/admin hủy
-    in_progress --> cancelled: user/admin hủy<br/>(tự nhả locks)
-    blocked --> cancelled: user/admin hủy
+    pending_handover --> in_progress: new agent accepts<br/>(L2/L3, retains state_summary)
+    pending_handover --> approved: timeout with no takers<br/>→ returns to backlog, alerts
+    awaiting_approval --> draft: user rejects<br/>(with reason → agent modifies spec)
+    draft --> cancelled: user/admin cancels
+    approved --> cancelled: user/admin cancels
+    in_progress --> cancelled: user/admin cancels<br/>(releases locks)
+    blocked --> cancelled: user/admin cancels
     cancelled --> [*]
 ```
 
-> **F-20:** `blocked`, `pending_handover` phải có đường ra (không có → task kẹt vĩnh viễn); `awaiting_approval` phải có đường reject; `cancelled` reachable từ mọi trạng thái chưa `completed` (chỉ user/admin kích hoạt — agent không tự hủy task; sơ đồ chỉ vẽ các cạnh chính). Hủy task đang `code_review`/`verification` cũng được phép qua dashboard.
+> **F-20:** `blocked` and `pending_handover` must have exits (otherwise tasks are locked forever); `awaiting_approval` must support a reject path; `cancelled` must be reachable from any state that is not `completed` (triggered only by user/admin — agents do not cancel tasks; diagram displays primary transitions). Cancelling tasks in `code_review` or `verification` is also permitted via the dashboard.
 
-**Bất biến do server enforce (không phải hướng dẫn suông):**
-- `update_task(status=completed)` trực tiếp → lỗi `GATE_VIOLATION` kèm `recovery_action` (phải đi qua `submit_verification` → review).
-- Transition sang `code_review` yêu cầu ≥ 1 `verification_records` hợp lệ cho đúng task revision.
-- Approve review chỉ được tính từ agent ≠ tác giả (theo `reviewer_must_differ`: khác agent, hoặc nghiêm hơn: khác provider/model).
-- Mỗi lần `rework` tăng `rework_cycle`; quá `max_rework_cycles` (default 3) → escalate cho user (không auto-loop vô hạn đốt token).
+**Invariants Enforced by Server (not just guidelines):**
+- Direct `update_task(status=completed)` → returns a `GATE_VIOLATION` error with a `recovery_action` (must traverse `submit_verification` → review).
+- Transition to `code_review` requires ≥ 1 valid `verification_records` for the current task revision.
+- Review approvals are only counted from agents ≠ author (subject to `reviewer_must_differ`: different agent, or stricter: different provider/model).
+- Each `rework` cycle increments `rework_cycle`; exceeding `max_rework_cycles` (default 3) → escalates to the user (no infinite loops burning tokens).
 
 ---
 
-## 4. Bidirectional Messaging (nền tảng tương tác 2 chiều)
+## 4. Bidirectional Messaging (Foundation for 2-way Interaction)
 
-### 4.1 Bảng `agent_messages`
+### 4.1 `agent_messages` Table
 ```sql
 CREATE TABLE agent_messages (
     message_id TEXT PRIMARY KEY,
     workspace_id TEXT NOT NULL,
     from_agent_id TEXT NOT NULL,
-    to_agent_id TEXT,                 -- NULL = broadcast theo role_filter
-    role_filter TEXT,                 -- 'reviewer' → gửi mọi agent role đó
+    to_agent_id TEXT,                 -- NULL = broadcast by role_filter
+    role_filter TEXT,                 -- 'reviewer' → sends to all agents with that role
     kind TEXT NOT NULL,               -- info | question | review_request | critique_request
                                       -- | review_response | critique_response | answer
-    payload TEXT NOT NULL,            -- JSON có schema theo kind
-    correlation_id TEXT,              -- nối request ↔ response
+    payload TEXT NOT NULL,            -- JSON schema specific to kind
+    correlation_id TEXT,              -- connects request ↔ response
     requires_response BOOLEAN DEFAULT FALSE,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     delivered_at TIMESTAMP,
@@ -91,21 +91,21 @@ CREATE TABLE agent_messages (
 CREATE INDEX idx_msg_inbox ON agent_messages(workspace_id, to_agent_id, delivered_at);
 ```
 
-### 4.2 Cơ chế delivery — 3 kênh phối hợp
-1. **Piggyback inbox (chủ lực):** MỌI tool response đều kèm `inbox: {unread: n, urgent: [...tóm tắt]}` — agent đang làm việc luôn thấy tin mới mà không cần tool riêng, được `protocol_next_step` hướng dẫn xử lý tin `requires_response` trước.
-2. **`co_force_wait_events(timeout_secs≤55, filters?)` (long-poll):** agent rảnh (vd reviewer được spawn để trực) block chờ; server trả ngay khi có message/gate event cho agent đó, hoặc `no_events` khi hết timeout → agent gọi lại. 55s < Cloudflare timeout 100s (Plan 06 §3.1). Đây là cách một agent "trực chiến" như thành viên team thật. **Lưu ý (F-24):** một số MCP client có timeout tool-call riêng ngắn hơn 55s → default `timeoutSecs = 25`, max 55; enrollment script chạy thử 1 lần `wait_events` để đo và in khuyến nghị nếu client cắt sớm. Mỗi vòng poll tốn 1 tool call trong context của agent — worker trực lâu nên được cấp token budget riêng (Plan 03 L3).
-3. **Check-in delivery:** tin chưa delivered trả đầy đủ khi agent check-in (phiên mới).
+### 4.2 Delivery Mechanisms — 3 Coordinated Channels
+1. **Piggyback Inbox (Primary):** EVERY tool response is appended with `inbox: {unread: n, urgent: [...summary]}` — active agents always see new messages without invoking a separate tool, and are guided by `protocol_next_step` to handle `requires_response` messages first.
+2. **`co_force_wait_events(timeout_secs≤55, filters?)` (Long-Poll):** Idle agents (e.g. reviewers spawned to watch the queue) block and wait; the server returns immediately when a message or gate event occurs for that agent, or returns `no_events` when the timeout is reached → agent loops and calls again. 55s < Cloudflare's 100s timeout (Plan 06 §3.1). This lets an agent stand by like a real team member. **Note (F-24):** some MCP clients have custom tool-call timeouts shorter than 55s → default `timeoutSecs = 25`, max 55; the enrollment script tests `wait_events` once to measure and print recommendations if the client cuts it off early. Each poll cycle consumes 1 tool call in the agent's context — active standby workers should be allocated dedicated token budgets (Plan 03 L3).
+3. **Check-in Delivery:** Undelivered messages are delivered in full when an agent checks in (new session).
 
 ### 4.3 Tools
-| Tool | Input | Hành vi |
+| Tool | Input | Behavior |
 | :--- | :--- | :--- |
-| `co_force_send_message` | `{to?: agentId, roleFilter?, kind, payload, requiresResponse?}` | Ghi message + event bus; trả `messageId, correlationId` |
-| `co_force_respond_message` | `{correlationId, payload}` | Đóng vòng request-response, notify người gửi |
-| `co_force_wait_events` | `{timeoutSecs?, kinds?[]}` | Long-poll như §4.2.2 |
+| `co_force_send_message` | `{to?: agentId, roleFilter?, kind, payload, requiresResponse?}` | Writes message + alerts event bus; returns `messageId, correlationId` |
+| `co_force_respond_message` | `{correlationId, payload}` | Completes the request-response cycle, notifying the sender |
+| `co_force_wait_events` | `{timeoutSecs?, kinds?[]}` | Long-polls as described in §4.2.2 |
 
 ---
 
-## 5. Review Workflow (gate chính)
+## 5. Review Workflow (Primary Gate)
 
 ```mermaid
 sequenceDiagram
@@ -117,20 +117,20 @@ sequenceDiagram
 
     Dev->>Srv: submit_verification(taskId, evidence)
     Srv->>Srv: validate evidence schema<br/>(test output, exit codes, coverage)
-    Srv-->>Dev: ✅ task → code_review, reviewer đang được tìm
-    Srv->>LLM: review-assist: đọc diff summary + task spec<br/>→ sinh checklist nghi vấn cho reviewer
+    Srv-->>Dev: ✅ task → code_review, locating reviewer
+    Srv->>LLM: review-assist: reads diff summary + task spec<br/>→ generates checklist of questions for reviewer
     Srv->>Rev: message kind=review_request<br/>{task, spec, files, evidence, assist_checklist}
-    Note over Rev: đang wait_events → nhận ngay
-    Rev->>Srv: get_agent_context(A) + recall(spec liên quan)
-    Rev->>Rev: đọc code thật trong workspace
+    Note over Rev: long-polling wait_events → receives immediately
+    Rev->>Srv: get_agent_context(A) + recall(related specs)
+    Rev->>Rev: reads actual code in the workspace
     Rev->>Srv: submit_review(taskId, verdict=changes_requested,<br/>findings=[{file, line, severity, issue, suggestion}])
-    Srv-->>Dev: inbox: findings (blocking) — task → rework
-    Dev->>Srv: update_task(fixed) + submit_verification (lần 2)
+    Srv-->>Dev: inbox: blocking findings — task → rework
+    Dev->>Srv: update_task(fixed) + submit_verification (2nd attempt)
     Rev->>Srv: submit_review(verdict=approved)
-    Srv->>Srv: đủ approvals theo policy → completed<br/>+ ghi quality_score record
+    Srv->>Srv: approvals met per policy → completed<br/>+ records quality_score record
 ```
 
-### 5.1 Verification evidence schema (bảng `verification_records`)
+### 5.1 Verification Evidence Schema (table `verification_records`)
 ```json
 {
   "task_revision": 2,
@@ -139,74 +139,74 @@ sequenceDiagram
     {"kind": "test",  "command": "cargo test -p co-force-core", "exit_code": 0,
      "summary": "142 passed, 0 failed", "output_digest": "sha256:..."},
     {"kind": "lint",  "command": "cargo clippy -- -D warnings", "exit_code": 0},
-    {"kind": "manual","description": "UI hiển thị đúng ở dark mode", "artifact": "screenshot ref"}
+    {"kind": "manual","description": "UI displays correctly in dark mode", "artifact": "screenshot ref"}
   ]
 }
 ```
-Server validate: có ≥ 1 step `kind=test` với `exit_code=0` (theo policy); evidence gắn với `task_revision` hiện tại — revision tăng → evidence cũ vô hiệu (chống khai man phổ biến nhất của LLM: "đã test rồi" từ lần trước).
+Server validates: contains ≥ 1 step `kind=test` with `exit_code=0` (per policy); evidence is bound to the current `task_revision` — incrementing the revision invalidates old evidence (preventing the common LLM lie: "already tested" from a previous run).
 
-**Revision tracking — chỉ dựa trên sự kiện server QUAN SÁT ĐƯỢC (F-21).** Server không nhìn thấy filesystem client nên không thể "phát hiện file đổi"; revision tăng khi:
-1. Task quay lại `in_progress` (rework);
-2. Agent lock thêm/lock lại files của task **sau khi** đã có evidence;
-3. Có `submit_verification` mới hoặc `commit_sha` mới.
+**Revision Tracking — Solely based on events OBSERVED BY THE SERVER (F-21).** The server cannot inspect the client's local filesystem to detect changes; the revision increments when:
+1. The task returns to `in_progress` (rework);
+2. The agent locks additional files or re-locks existing files for the task **after** evidence has been submitted;
+3. A new `submit_verification` or new `commit_sha` is received.
 
-Khi workspace có git remote + Worker Pool bật: server **fetch mirror và verify `commit_sha` tồn tại** ngay tại `submit_verification` — không thấy → `EVIDENCE_STALE {reason: "commit_not_found"}` (agent phải push trước, cũng là điều kiện để L3 reviewer đọc được đúng code). Không có remote: chấp nhận giới hạn tin cậy — hàng rào thật khi đó là reviewer **tự chạy lại test độc lập**, evidence chỉ là bằng chứng bổ trợ.
+When a git remote is configured + the Worker Pool is active: the server **fetches the mirror and verifies the `commit_sha` exists** during `submit_verification` — if missing → returns `EVIDENCE_STALE {reason: "commit_not_found"}` (the agent must push first, which is also required for the L3 reviewer to inspect the correct code). Without a remote: trusts local execution limits — the primary gate is the reviewer **running tests independently**, and evidence acts as supplementary proof.
 
-### 5.2 Bảng `reviews`
+### 5.2 `reviews` Table
 `review_id, task_id, task_revision, reviewer_agent_id, verdict (approved|changes_requested), findings JSON, assist_checklist JSON, created_at`.
 
-## 6. Critique Fan-out (phản biện đa mô hình)
+## 6. Critique Fan-out (Adversarial Critique)
 
-`co_force_request_critique({subject, content, fanout?})` — dùng cho quyết định kiến trúc/spec quan trọng, trước khi code:
-1. Server chọn `fanout` agents (ưu tiên đa dạng provider/model; thiếu → spawn).
-2. Mỗi agent nhận `critique_request`, trả `submit_critique({position: agree|disagree, arguments[], risks[], alternatives[]})`.
-3. Server dùng reasoner LLM **tổng hợp bất đồng** (không vote đa số — bất đồng được trình bày nguyên vẹn cho user/agent chủ trì quyết định).
-4. Kết quả lưu `critiques` + distill vào knowledge.
+`co_force_request_critique({subject, content, fanout?})` — used for major architectural/specification decisions before coding starts:
+1. The server selects `fanout` agents (prioritizing diverse providers/models; spawns if missing).
+2. Each agent receives the `critique_request` and returns a `submit_critique({position: agree|disagree, arguments[], risks[], alternatives[]})`.
+3. The server uses the reasoner LLM to **consolidate disagreements** (not a simple majority vote — disagreements are presented intact to the user/agent driving the decision).
+4. The output is recorded in `critiques` + distilled into workspace knowledge.
 
-## 7. Server-side LLM Quality Services (dùng reasoner model — Plan 06 §5)
+## 7. Server-Side LLM Quality Services (using reasoner model — Plan 06 §5)
 
-> **Tùy chọn subscription (Plan 08 §5):** `reasoner_provider = "cli-worker"` — các service không cần latency thấp (distillation, consolidation, recheck nightly) route thành job L3 chạy trên CLI subscription thay vì gọi API reasoner. Spec Recheck/Review Assist interactive nên giữ reasoner API/Ollama (cần nhanh).
+> **Subscription Option (Plan 08 §5):** `reasoner_provider = "cli-worker"` — tasks that do not require low latency (distillation, consolidation, nightly rechecks) are routed as L3 jobs running on a CLI subscription instead of calling a cloud reasoner API. Spec Recheck/Review Assist should remain interactive and run via the reasoner API/Ollama (must be fast).
 
-| Service | Trigger | Việc làm |
+| Service | Trigger | Actions |
 | :--- | :--- | :--- |
-| **Spec Recheck** (UC-06 nâng cấp) | task vào `spec_review` | Reasoner phân tích use cases/edge cases/security/dependency giữa các tasks → trả `gaps[], questions[]`; có gap → task về `draft` kèm câu hỏi cho user |
-| **Review Assist** | task vào `code_review` | Sinh checklist nghi vấn theo diff + spec cho reviewer (reviewer vẫn là agent — assist không thay thế) |
-| **Handover Package Validate** | `co_force_handover` | Kiểm độ đầy đủ package (remaining/next_steps/gotchas) — thiếu/mơ hồ → `HANDOVER_INCOMPLETE` chỉ rõ thiếu gì (Plan 03 §5.2); bàn giao cẩu thả bị chặn như mọi gate |
-| **Session Distillation** | task `completed` / nightly | Memories phiên → knowledge tổng quát; phát hiện skill candidates |
-| **Memory Consolidation** | nightly | Dedup (cosine > 0.92), decay entries không dùng, re-score confidence |
-| **Quality Scoring** | task `completed` | Ghi `quality_scores`: rework_cycles, findings theo severity, thời gian ở mỗi gate, review coverage |
+| **Spec Recheck** (UC-06 upgraded) | task enters `spec_review` | Reasoner analyzes use cases/edge cases/security/task dependencies → returns `gaps[], questions[]`; if gaps exist → task returns to `draft` with questions for the user |
+| **Review Assist** | task enters `code_review` | Generates a checklist of questions based on diff + spec for the reviewer (the reviewer is still an agent — assist does not replace them) |
+| **Handover Package Validate** | `co_force_handover` | Verifies the completion of the handover package (remaining/next_steps/gotchas) — missing/ambiguous fields → returns `HANDOVER_INCOMPLETE` with details (Plan 03 §5.2); sloppy handovers are blocked |
+| **Session Distillation** | task gets `completed` / nightly | Distills session memories → general workspace knowledge; identifies skill candidates |
+| **Memory Consolidation** | nightly | Deduplicates (cosine similarity > 0.92), decays unused entries, re-scores confidence |
+| **Quality Scoring** | task gets `completed` | Records `quality_scores`: rework_cycles, findings by severity, duration at each gate, review coverage |
 
-## 8. Quality Policy per Workspace (bảng `quality_policies`)
+## 8. Quality Policy per Workspace (table `quality_policies`)
 
 ```toml
-# override defaults của server.toml [quality] — chỉnh qua dashboard hoặc co_force_quality_policy (admin)
-reviews_required = 1                # số approve cần
-reviewer_must_differ = "provider"   # "agent" | "provider" (khắt khe hơn: model khác hẳn)
+# overrides server.toml [quality] defaults — modified via dashboard or co_force_quality_policy (admin)
+reviews_required = 1                # number of approvals needed
+reviewer_must_differ = "provider"   # "agent" | "provider" (stricter: different model)
 require_recheck = true
 require_verification_evidence = true
 required_evidence_kinds = ["test", "lint"]
 critique_fanout = 2
 max_rework_cycles = 3
-definition_of_done = ["tests pass", "no clippy warnings", "docs updated"]  # inject vào review checklist
+definition_of_done = ["tests pass", "no clippy warnings", "docs updated"]  # injected into the review checklist
 ```
 
-**Validate lúc SET policy, không đợi runtime (F-22):** `reviewer_must_differ = "provider"` mà hệ có < 2 providers khả dụng (agents online + worker pool `[workers].providers`) → **từ chối set** kèm hướng dẫn (thêm provider vào worker pool, hoặc hạ về `"agent"`); dashboard cảnh báo ngay khi số provider khả dụng tụt xuống 1 (vd revoke máy Cursor cuối cùng). Không validate sớm thì mọi task sẽ kẹt ở `code_review` vĩnh viễn — đứng gate + alert đúng tinh thần N2 nhưng để user phát hiện deadlock cấu hình lúc runtime là không hợp lý.
+**Validate when SETTING policy, do not wait for runtime (F-22):** Setting `reviewer_must_differ = "provider"` when the system has < 2 available providers (online agents + worker pool `[workers].providers`) → **rejects the change** with instructions (add providers to the worker pool, or lower settings to `"agent"`); the dashboard displays warnings immediately if the number of active providers drops to 1 (e.g. revoking the last Cursor machine). Failing to validate early results in tasks locking at `code_review` indefinitely — freezing at gates + alerting fits N2, but exposing configuration deadlocks to users at runtime is unacceptable.
 
-## 9. Quality Metrics (dashboard — đo chất lượng, không đo tốc độ)
+## 9. Quality Metrics (Dashboard — measures quality, not speed)
 
-- **Rework rate** = tasks có ≥1 rework / tổng — cao nghĩa là review đang bắt được lỗi (tốt) hoặc spec kém (xem cùng recheck-gap count)
-- **Findings/task theo severity**; **escaped defects** (bug phát hiện sau completed — đánh dấu hồi tố)
-- **Review coverage** (% tasks qua đủ gates — mục tiêu 100%), **evidence integrity** (% verification đúng revision)
-- **Memory reuse rate** (recall hits được cite trong task mới) — đo giá trị tri thức tích lũy
+- **Rework rate** = tasks with ≥1 rework / total tasks — high values indicate reviews are catching bugs (good) or specification quality is low (correlate with recheck-gap count).
+- **Findings per task** grouped by severity; **escaped defects** (bugs reported after completion — marked retroactively).
+- **Review coverage** (% of tasks passing all gates — target 100%), **evidence integrity** (% of verifications matching task revision).
+- **Memory reuse rate** (recall hits cited in new tasks) — measures the value of accumulated knowledge.
 
-## 10. Trình tự Triển khai (Step-by-Step, TDD)
+## 10. Steps to Implement (Step-by-Step, TDD)
 
-1. Migrations: `agent_messages`, `reviews`, `critiques`, `verification_records`, `quality_policies`, `quality_scores` + repos (mockall).
-2. Task state machine mới: pure function `transition(task, action, policy) -> Result<TaskStatus, GateViolation>` — unit test đủ mọi cạnh (đây là logic quan trọng nhất, test trước tiên).
-3. Messaging: send/respond + inbox piggyback middleware (mọi tool response đi qua decorator gắn inbox) + `wait_events` (tokio watch/notify per agent, timeout 55s).
-4. Verification evidence validator + revision tracking theo sự kiện server quan sát được (§5.1 — F-21) + verify `commit_sha` trong mirror khi có remote.
-5. Review workflow use cases + separation-of-duties checks + auto-staffing hook (gọi sang Plan 03 spawn).
-6. LLM services: recheck, review-assist, distillation, consolidation — mỗi service 1 struct nhận `Arc<dyn LlmProvider>` (mock cho unit test; prompt templates để trong `quality/prompts/` dạng file, có versioning).
-7. Critique fan-out + tổng hợp bất đồng.
-8. Quality scores + metrics API cho dashboard.
-9. Integration test "3 agents như một team" (kịch bản Master Plan §6.1) với mock LLM + mock 3 MCP sessions.
+1. Migrations: set up `agent_messages`, `reviews`, `critiques`, `verification_records`, `quality_policies`, `quality_scores` tables + repositories (mockall).
+2. New task state machine: implement the pure function `transition(task, action, policy) -> Result<TaskStatus, GateViolation>` — write unit tests for every transition path (this is critical logic, test first).
+3. Messaging: implement send/respond + inbox piggyback middleware (every tool response passes through a decorator appending the inbox) + `wait_events` (tokio watch/notify per agent, 55s timeout).
+4. Verification evidence validator + revision tracking based on server-observed events (§5.1 — F-21) + verify `commit_sha` in the mirror when a remote is configured.
+5. Review workflow use cases + separation-of-duties checks + auto-staffing hook (calls Plan 03 spawn).
+6. LLM services: recheck, review-assist, distillation, consolidation — each service is a struct receiving `Arc<dyn LlmProvider>` (mock for unit tests; prompt templates located in `quality/prompts/` as versioned files).
+7. Critique fan-out + dispute consolidation.
+8. Quality scores + metrics API for the dashboard.
+9. Integration test: "3 agents working as a team" (Master Plan §6.1 scenario) with mock LLM + mock 3 MCP sessions.

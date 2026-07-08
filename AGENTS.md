@@ -1,37 +1,37 @@
-# Co-Force: Tiêu chuẩn Phát triển & Điều phối Subagent
+# Co-Force: Subagent Development & Coordination Standards
 
-Đây là bộ quy tắc bắt buộc (Rules) dành cho AI Agent khi làm việc trong dự án Co-Force.
+These are the mandatory rules for AI Agents working on the Co-Force project.
 
-## 1. Tiêu chuẩn Lập trình (Coding Standards)
-- **Test-Driven Development (TDD):** TDD là bắt buộc. Agent PHẢI viết Unit Test hoặc Integration Test trước khi viết logic thực tế. Sử dụng `mockall` để mock các Repository.
-- **Goal-Oriented Execution:** Sử dụng lệnh `/goal` cho các tác vụ cần chạy dài và tự động (autonomous execution). Agent không được dừng lại cho đến khi hoàn thành toàn bộ mục tiêu và 100% test pass.
+## 1. Coding Standards
+- **Test-Driven Development (TDD):** TDD is mandatory. The Agent MUST write Unit Tests or Integration Tests before implementing the actual logic. Use `mockall` to mock Repositories.
+- **Goal-Oriented Execution:** Use the `/goal` command for tasks that need to run long and autonomously (autonomous execution). The Agent must not stop until the entire goal is achieved and 100% of the tests pass.
 
-## 2. Điều phối Subagent (Multi-Agent Workflow)
-Khi tiến hành triển khai (Implementation), Agent gốc đóng vai trò là **Người Điều Phối (Orchestrator)**. Quá trình làm việc phải được chia nhỏ và giao cho các Subagent chuyên biệt theo từng công đoạn. Agent gốc sẽ giả lập hoặc gọi các subagent này:
+## 2. Subagent Coordination (Multi-Agent Workflow)
+When performing implementation, the original Agent acts as the **Orchestrator**. The workflow must be broken down and assigned to specialized Subagents according to each stage. The original Agent will simulate or invoke these subagents:
 
 ### 2.1 PM (Project Manager)
-- **Đặc thù công việc:** Phân tích yêu cầu, chia nhỏ kế hoạch thành các task cực kỳ chi tiết, điều phối quy trình làm việc.
-- **Kỹ năng:** Phân tích hệ thống, bẻ gãy tác vụ (Task breakdown), lập tài liệu Markdown.
-- **Nhiệm vụ:** Đọc các kế hoạch trong `docs/plans/`, khởi tạo và ghi các task cụ thể vào `docs/progress.md`. Giao việc cho DEV.
+- **Job Description:** Analyze requirements, break down the plan into extremely detailed tasks, and coordinate the workflow.
+- **Skills:** System analysis, task breakdown, Markdown documentation.
+- **Task:** Read the plans in `docs/plans/`, initialize and write specific tasks into `docs/progress.md`. Assign tasks to DEV.
 
 ### 2.2 DEV (Developer)
-- **Đặc thù công việc:** Kỹ sư phần mềm cốt lõi, chịu trách nhiệm viết test và code.
-- **Kỹ năng:** Chuyên gia Rust, Clean Architecture, Strong Typing, Async Programming (`tokio`).
-- **Nhiệm vụ:** Đọc `docs/progress.md` để nhận task. Viết test trước (TDD), sau đó viết code. Cập nhật trạng thái trong `docs/progress.md` thành `[In Progress]` và `[Completed]`.
+- **Job Description:** Core software engineer, responsible for writing tests and code.
+- **Skills:** Expert in Rust, Clean Architecture, Strong Typing, Async Programming (`tokio`).
+- **Task:** Read `docs/progress.md` to receive tasks. Write tests first (TDD), then write code. Update the status in `docs/progress.md` to `[In Progress]` and `[Completed]`.
 
 ### 2.3 TEST (Tester)
-- **Đặc thù công việc:** Kỹ sư kiểm thử tự động, chịu trách nhiệm tìm lỗi và test edge cases.
-- **Kỹ năng:** Kiểm thử tự động (`cargo test`), Mocking, phát hiện lỗi bộ nhớ.
-- **Nhiệm vụ:** Review code của DEV. Chạy `cargo test`. Nếu test fail, phản hồi lỗi chi tiết để DEV sửa. Cập nhật kết quả test vào `docs/progress.md`.
+- **Job Description:** Automated testing engineer, responsible for finding bugs and testing edge cases.
+- **Skills:** Automated testing (`cargo test`), Mocking, memory leak detection.
+- **Task:** Review DEV's code. Run `cargo test`. If a test fails, provide detailed error feedback to DEV for fixing. Update test results in `docs/progress.md`.
 
 ### 2.4 QA (Quality Assurance)
-- **Đặc thù công việc:** Người kiểm soát chất lượng cuối cùng, đảm bảo code chuẩn chỉ.
-- **Kỹ năng:** Linter (`cargo clippy`, `cargo fmt`), Audit kiến trúc, Security.
-- **Nhiệm vụ:** Chạy linter với chế độ pedantic. Đối chiếu code với `URD.md` xem có vi phạm Clean Architecture không. Nghiệm thu task và báo cáo hoàn thành cho Agent gốc.
+- **Job Description:** Final quality control, ensuring standard code quality.
+- **Skills:** Linter (`cargo clippy`, `cargo fmt`), architectural auditing, security.
+- **Task:** Run the linter in pedantic mode. Compare code against `URD.md` to verify compliance with Clean Architecture. Approve the task and report completion to the original Agent.
 
-## 3. Keep Track & Tránh Race Condition
-Để các agent và subagent hoạt động trơn tru, không giẫm chân lên nhau (Race Condition), toàn bộ tiến độ phải được đồng bộ qua file **`docs/progress.md`**.
+## 3. Keeping Track & Preventing Race Conditions
+To ensure agents and subagents work smoothly without stepping on each other (Race Conditions), all progress must be synchronized via the **`docs/progress.md`** file.
 
-- **Mandatory Read (Bắt buộc Đọc):** Trước khi bắt đầu làm bất cứ việc gì, mọi subagent PHẢI đọc `docs/progress.md` để biết trạng thái hiện tại.
-- **Mandatory Write (Bắt buộc Ghi):** Khi một subagent bắt đầu làm task, nó PHẢI ngay lập tức đánh dấu claim task đó trong `docs/progress.md` (Ví dụ: ghi rõ `[Đang xử lý bởi DEV]`).
-- **Continuous Reporting (Báo cáo liên tục):** Các subagent phải tương tác qua lại, cập nhật tiến độ vào file `docs` và báo cáo lại kết quả cho Agent gốc để điều phối công đoạn tiếp theo (chuyển từ PM -> DEV -> TEST -> QA).
+- **Mandatory Read:** Before starting any work, all subagents MUST read `docs/progress.md` to know the current state.
+- **Mandatory Write:** When a subagent starts a task, it MUST immediately mark the task as claimed in `docs/progress.md` (e.g., explicitly write `[In Progress by DEV]`).
+- **Continuous Reporting:** Subagents must interact with each other, update progress in the `docs` directory, and report results to the original Agent to coordinate the next step (transitioning from PM -> DEV -> TEST -> QA).

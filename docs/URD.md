@@ -4,93 +4,93 @@
 **Date:** 2026-07-08  
 **Status:** Reviewed — see `docs/review_findings.md`
 
-> **⚠️ Ghi chú sau review 2026-07-08 (v2):** Một số quyết định trong tài liệu này đã được cập nhật. Khi mâu thuẫn, thứ tự ưu tiên: `docs/plans/00_roadmap.md` (Master Plan) → `docs/review_findings.md` §5–6 → `docs/architecture.md` → tài liệu này. Các thay đổi chính: rmcp 2.x + Streamable HTTP (thay SSE) · bỏ `embedvec` (vector BLOB trong SQLite) · chốt storage layout · chmod enforcement là opt-in · **một release 1.0 end-to-end, không MVP** · **server độc lập + cloudflared tunnel + auth token** (Plan 06) · **Ollama bắt buộc trên server, không có degraded mode** · **Quality Engine + A2A hai chiều là năng lực trung tâm** (Plan 07) — mục tiêu sản phẩm là chất lượng đầu ra của agents, không phải tốc độ · **đa provider CLI subscription-first** (Claude Code / Codex / Antigravity `agy` — Plan 08; chỗ nào tài liệu này chỉ nhắc Claude CLI hoặc "antigravity-cli" phỏng đoán, đọc là "provider CLI trong registry Plan 08") · catalog chốt là **39 MCP tools** tại `architecture.md` §6.4 (Appendix B bên dưới chỉ dùng tra signature). File `implementation_instructions.md` đã bị xóa 2026-07-08 (chỉ dẫn lỗi thời) — dev đọc `docs/plans/01–10`.
+> [!WARNING]
+> **Post-review Note 2026-07-08 (v2):** Several decisions in this document have been updated. In case of conflicts, the order of precedence is: `docs/plans/00_roadmap.md` (Master Plan) → `docs/review_findings.md` §5–6 → `docs/architecture.md` → this document. Key changes include: rmcp 2.x + Streamable HTTP (replacing SSE) · removal of `embedvec` (using vector BLOB in SQLite) · finalized storage layout · chmod file protection is opt-in · **a single end-to-end 1.0 release, no MVP** · **independent server + cloudflared tunnel + auth tokens** (Plan 06) · **Ollama is mandatory on the server, no degraded mode** · **Quality Engine + Bidirectional A2A are the core features** (Plan 07) — the product's goal is agent output quality, not execution speed · **multi-provider CLI subscription-first** (Claude Code / Codex / Antigravity `agy` — Plan 08; references to Claude CLI or "antigravity-cli" in this document should be read as "provider CLI in the Plan 08 registry") · the finalized tool catalog comprises **39 MCP tools** listed in `docs/architecture.md` §6.4 (Appendix B below should only be used to inspect signatures). The file `implementation_instructions.md` was deleted on 2026-07-08 (obsolete guidelines) — developers should follow `docs/plans/01–10`.
 
 ---
 
 ## 1. Executive Summary
 
-Co-Force là một **MCP Server đa năng** kết hợp giữa cơ chế **Thụ động (Passive Coordinator)** đối với agent ban đầu và **Chủ động (Active A2A Orchestrator)** trong việc quản lý vòng đời của các sub-agents. Nó cung cấp bộ tools để AI agent tự nhận diện, tự phối hợp, và đặc biệt là khả năng **tự đẻ nhánh (spawn sub-agents)** và **chuyển giao công việc (handover)** khi gặp sự cố, thông qua MCP protocol chuẩn.
+Co-Force is a **multi-purpose MCP Server** that combines a **Passive Coordinator** model for the initial developer agent with an **Active A2A Orchestrator** for managing the lifecycle of sub-agents. It provides a suite of tools for AI agents to self-identify, self-coordinate, and perform **sub-agent spawning** and **task handover** when encountering issues, all through the standard MCP protocol.
 
-**Mục tiêu:** Biến mỗi thư mục dự án thành một workspace thông minh, nơi một tác vụ phức tạp có thể được chia nhỏ cho nhiều AI agent làm việc song song một cách tự động (A2A), không conflict, chia sẻ memory/knowledge, và mang lại trải nghiệm liền mạch (user-friendly) cho nhà phát triển.
+**Goal:** Turn every project directory into an intelligent workspace where complex tasks can be divided among multiple AI agents working in parallel automatically (A2A), conflict-free, sharing memory/knowledge, and providing a user-friendly onboarding experience for developers.
 
-**Đóng gói:** Tauri Desktop App (Rust backend + NextJS frontend), global config tại `~/.co-force/`.
+**Packaging:** Tauri Desktop App (Rust backend + NextJS frontend), global configuration at `~/.co-force/`.
 
 ---
 
 ## 2. System Vision & Core Principles
 
-### 2.1 Triết lý thiết kế
+### 2.1 Design Philosophy
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│  Co-Force = "Bộ não chung & Người Điều Phối" cho các AI Agent       │
+│  Co-Force = "Shared Brain & Coordinator" for AI Agents             │
 │                                                                     │
-│  ✅ Agent chính CHỦ ĐỘNG gọi tools → Co-Force PHẢN HỒI              │
-│  ✅ Khi có yêu cầu, Co-Force đẻ nhánh (Spawn) và quản lý Sub-Agents │
+│  ✅ Main agent actively calls tools → Co-Force responds             │
+│  ✅ Upon request, Co-Force spawns and manages Sub-Agents           │
 │                                                                     │
-│  Mỗi tool là một "dịch vụ" mà agent có thể sử dụng:               │
-│    🪪 Identity — "Tôi là ai? Đang làm gì?"                        │
-│    📋 Tasks — "Có task nào cần làm? Tạo task mới."                 │
-│    🤖 A2A — "Đẻ thêm agent phụ làm task Backend đi."              │
-│    🔄 Handover — "Tôi hết hạn mức rồi, gọi agent khác làm tiếp."  │
-│    🔒 Locks — "Tôi đang sửa file A, đừng đụng vào."               │
-│    🧠 Memory — "Lưu lại kinh nghiệm này. Nhớ lại cái kia."       │
-│    🛠️ Skills — "Đã biết cách deploy Docker chưa?"                  │
-│    📊 Status — "Ai đang online? Workspace thế nào?"                │
+│  Each tool acts as a "service" that agents can utilize:            │
+│    🪪 Identity — "Who am I? What am I doing?"                      │
+│    📋 Tasks — "What tasks need doing? Create new tasks."           │
+│    🤖 A2A — "Spawn a backend sub-agent to handle this task."       │
+│    🔄 Handover — "I've hit my rate limit, hand over to another."   │
+│    🔒 Locks — "I'm editing file A, do not modify."                 │
+│    🧠 Memory — "Save this learning. Recall that context."          │
+│    🛠️ Skills — "Do we know how to deploy via Docker?"              │
+│    📊 Status — "Who is online? What is the workspace state?"        │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
 ### 2.2 Core Principles
 
-| #   | Principle                  | Mô tả                                                                          |
-| :-- | :------------------------- | :----------------------------------------------------------------------------- |
-| P1  | **Active A2A Orchestrator**| Hỗ trợ Agent-to-Agent (A2A) spawning. Quản lý vòng đời sub-agents (spawn/kill/handover). |
-| P2  | **Workspace-centric**      | Mỗi thư mục dự án = 1 workspace. Config tại `.co-force/`.                      |
-| P3  | **Agent-agnostic**         | Hoạt động với bất kỳ AI agent nào hỗ trợ MCP (Claude, Gemini, GPT, Cursor...). |
-| P4  | **Local-first**            | Không phụ thuộc cloud. Server chạy on-premises (localhost hoặc LAN). LLM qua Ollama, vector DB embedded. |
-| P5  | **Multi-machine ready**    | Workspace = git repo, nhiều máy clone cùng repo.                               |
-| P6  | **Knowledge accumulation** | Mỗi phiên làm việc đều tích lũy memory → knowledge → skill.                    |
+| #   | Principle                  | Description                                                                     |
+| :-- | :------------------------- | :------------------------------------------------------------------------------ |
+| P1  | **Active A2A Orchestrator**| Supports Agent-to-Agent (A2A) spawning. Manages the lifecycle of sub-agents (spawn/kill/handover). |
+| P2  | **Workspace-Centric**      | Each project directory = 1 workspace. Local configuration under `.co-force/`.   |
+| P3  | **Agent-Agnostic**         | Operates with any AI agent supporting MCP (Claude Code, Gemini, GPT, Cursor...). |
+| P4  | **Local-First**            | Self-hosted infrastructure. Server runs on-premises (localhost or LAN). Local LLM via Ollama, embedded vector DB. |
+| P5  | **Multi-Machine Ready**    | Workspaces are mapped to git repositories; multiple machines can clone and coordinate. |
+| P6  | **Knowledge Accumulation** | Every session consolidates memories → knowledge → skills.                       |
 
 ---
 
-## 3. Technology Decision
+## 3. Technology Decisions
 
 ### 3.1 Language Selection Analysis
 
-| Tiêu chí          | Rust                                                       | Python                                                  | Verdict                       |
+| Criteria          | Rust                                                       | Python                                                  | Verdict                       |
 | :---------------- | :--------------------------------------------------------- | :------------------------------------------------------ | :---------------------------- |
-| MCP SDK           | `rmcp` — **official** Rust SDK, macro-driven, v0.16+       | `mcp` — official Python SDK, production-ready           | 🟢 Cả hai đều có official SDK |
-| Tauri integration | **Native** — Tauri IS Rust                                 | Sidecar (PyInstaller) — thêm ~50MB binary, IPC overhead | 🟢 **Rust thắng**             |
-| Vector DB         | `embedvec` — pure Rust, HNSW, SIMD-accelerated, persistent | ChromaDB, FAISS — mature nhưng cần C++ bindings         | 🟢 **Rust thắng**             |
-| SQLite            | `rusqlite` + `tokio-rusqlite` (async wrapper)              | `sqlite3` built-in                                      | 🟡 Ngang nhau                 |
-| Ollama client     | `reqwest` HTTP client — straightforward                    | `ollama` Python package — mature                        | 🟡 Ngang nhau                 |
-| RAG chunking      | Structural parsing + Ollama LLM calls — **khả thi**        | spaCy/NLTK + rich ecosystem                             | 🟡 Python nhỉnh hơn           |
-| Deploy size       | **Single binary** ~15MB                                    | Python runtime + venv ~200MB+                           | 🟢 **Rust thắng**             |
-| Development speed | Chậm hơn 2-3x (boilerplate, borrow checker)                | Nhanh, prototype dễ                                     | 🟡 Python nhỉnh hơn           |
-| Memory safety     | Guaranteed at compile time                                 | Runtime errors possible                                 | 🟢 **Rust thắng**             |
-| Performance       | **5-20x faster** cho vector operations                     | GIL limitations cho concurrent                          | 🟢 **Rust thắng**             |
+| MCP SDK           | `rmcp` — **official** Rust SDK, macro-driven, v0.16+       | `mcp` — official Python SDK, production-ready           | 🟢 Both have official SDKs    |
+| Tauri integration | **Native** — Tauri is written in Rust                      | Sidecar (PyInstaller) — adds ~50MB binary, IPC overhead | 🟢 **Rust preferred**         |
+| Vector DB         | `embedvec` — pure Rust, HNSW, SIMD-accelerated, persistent | ChromaDB, FAISS — mature but require C++ bindings       | 🟢 **Rust preferred**         |
+| SQLite            | `rusqlite` + `tokio-rusqlite` (async wrapper)              | `sqlite3` built-in                                      | 🟡 Comparable                 |
+| Ollama client     | `reqwest` HTTP client — straightforward                    | `ollama` Python package — mature                        | 🟡 Comparable                 |
+| RAG chunking      | Structural parsing + Ollama LLM calls — **feasible**        | spaCy/NLTK + rich ecosystem                             | 🟡 Python slightly leads      |
+| Deploy size       | **Single binary** ~15MB                                    | Python runtime + venv ~200MB+                           | 🟢 **Rust preferred**         |
+| Development speed | Slower (boilerplate, borrow checker)                      | Fast, rapid prototyping                                 | 🟡 Python leads               |
+| Memory safety     | Guaranteed at compile time                                 | Runtime errors possible                                 | 🟢 **Rust preferred**         |
+| Performance       | **5-20x faster** for vector operations                     | GIL limitations for concurrency                         | 🟢 **Rust preferred**         |
 
-### 3.2 Quyết định: Rust
+### 3.2 Verdict: Rust
 
-> **VERDICT: Rust** — vì Tauri integration native, single binary deployment, performance cho vector operations, và đây là long-term infrastructure project.
+**VERDICT: Rust** — due to native Tauri integration, single binary deployment, performance for vector operations, and suitability for long-term infrastructure.
 
-**Rủi ro chấp nhận được:**
-
-- Development chậm hơn → giảm thiểu bằng macro-driven API của `rmcp`
-- RAG chunking ít thư viện → outsource logic nặng cho Ollama LLM
-- Ít tutorial/example → compensate bằng tài liệu chi tiết
+**Accepted Risks & Mitigations:**
+- Slower development speed → mitigated using `rmcp` macro-driven APIs.
+- Fewer RAG chunking libraries → offload heavy processing to Ollama/Reasoner LLM.
+- Fewer tutorials → compensated by detailed project documentation.
 
 ### 3.3 Component Stack
 
 | Component       | Crate / Technology                             | Version |
 | :-------------- | :--------------------------------------------- | :------ |
-| MCP Server      | `rmcp` (features: `server`, `transport-sse`)   | 0.16+   |
+| MCP Server      | `rmcp` (features: `server`, `transport-sse`)   | 2.1+    |
 | Vector DB       | `embedvec` (HNSW, cosine, persistent)          | latest  |
 | SQLite          | `rusqlite` + `tokio-rusqlite`                  | latest  |
 | HTTP Client     | `reqwest` (Ollama API calls)                   | latest  |
 | Serialization   | `serde` + `serde_json`                         | latest  |
-| Async Runtime   | `tokio` (multi-thread)                         | 1.x     |
+| Async Runtime   | `tokio` (multi-threaded)                       | 1.x     |
 | CLI/Config      | `clap` + `toml`                                | latest  |
 | UUID            | `uuid` (v4)                                    | latest  |
 | Desktop App     | Tauri v2                                       | 2.x     |
@@ -134,13 +134,13 @@ graph LR
     User -->|monitor| DASH
 ```
 
-| Actor                | Mô tả                                                      | Interaction                                  |
+| Actor                | Description                                                | Interaction                                  |
 | :------------------- | :--------------------------------------------------------- | :------------------------------------------- |
-| **User / Developer** | Người dùng cuối, gửi prompt cho agent                      | Gián tiếp qua agent; trực tiếp qua Dashboard |
-| **AI Agent**         | Bất kỳ AI agent nào hỗ trợ MCP (Claude, Gemini, Cursor...) | Gọi MCP tools trực tiếp                      |
-| **Co-Force MCP**     | Server thụ động, phản hồi tool calls                       | Không bao giờ chủ động                       |
-| **Ollama**           | Local LLM server cho embedding + classification            | HTTP API, chạy background                    |
-| **Dashboard**        | Giao diện web trong Tauri app                              | WebSocket real-time                          |
+| **User / Developer** | End-user writing prompts for the AI agent                  | Indirectly via agents; directly via Dashboard |
+| **AI Agent**         | Any AI agent supporting MCP (Claude Code, Cursor, etc.)     | Directly invokes MCP tools                   |
+| **Co-Force MCP**     | Passive server responding to tool calls                    | Never executes spontaneously                 |
+| **Ollama**           | Local LLM server for embeddings and classification         | HTTP API, running in the background          |
+| **Dashboard**        | Web interface within the Tauri app (or embedded in server)  | WebSockets / HTTP REST API                   |
 
 ---
 
@@ -173,9 +173,9 @@ graph TB
     UA -->|prompt| A2
     UB -->|prompt| A3
 
-    A1 -->|SSE / HTTP| MCP
-    A2 -->|SSE / HTTP| MCP
-    A3 -->|SSE / HTTP| MCP
+    A1 -->|HTTP| MCP
+    A2 -->|HTTP| MCP
+    A3 -->|HTTP| MCP
 
     MCP --> DB
     MCP --> VEC
@@ -189,7 +189,7 @@ graph TB
 ### 5.2 Data Storage Architecture
 
 ```
-~/.co-force/                          # Global config (Tauri app data)
+~/.co-force/                          # Global configuration (Tauri app data)
 ├── config.toml                       # Global settings
 ├── workspaces.json                   # Index of known workspaces
 └── logs/                             # Server logs
@@ -197,15 +197,7 @@ graph TB
 <project>/.co-force/                  # Per-workspace data (git-ignored)
 ├── workspace.json                    # Workspace identity
 ├── agent.json                        # Local agent session cache
-├── session_status.json               # Active locks & tasks (read by agents)
-├── db/
-│   └── co-force.db                   # SQLite: agents, tasks, locks (central server only)
-├── memory/
-│   ├── embedvec-index/               # Vector index (HNSW, central server only)
-│   └── metadata.json                 # Memory statistics
-└── skills/
-    └── {skill-name}/
-        └── SKILL.md                  # Auto-generated skill docs
+└── token                             # Long-term machine token (0600)
 ```
 
 ### 5.3 Database Schema (SQLite)
@@ -232,11 +224,11 @@ CREATE TABLE tasks (
     workspace_id TEXT NOT NULL,
     title TEXT NOT NULL,
     objective TEXT,
-    status TEXT DEFAULT 'draft',        -- draft, pending_review, approved, in_progress, blocked, completed, failed
+    status TEXT DEFAULT 'draft',        -- draft, spec_review, awaiting_approval, approved, in_progress, blocked, completed, rework
     assigned_agent_id TEXT,
     delegated_from_agent_id TEXT,
     parent_task_id TEXT,                -- For subtasks
-    use_cases TEXT,                      -- JSON array of UseCase objects
+    use_cases TEXT,                     -- JSON array of UseCase objects
     prerequisites TEXT,                 -- JSON array of strings
     verification_plan TEXT,             -- JSON array of VerificationStep
     required_skills TEXT,               -- JSON array of strings
@@ -244,6 +236,8 @@ CREATE TABLE tasks (
     impact_analysis TEXT,               -- JSON object: {affectedTasks, systemImpact, description}
     priority INTEGER DEFAULT 0,
     sort_order INTEGER DEFAULT 0,
+    revision INTEGER DEFAULT 1,
+    rework_cycle INTEGER DEFAULT 0,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     completed_at TIMESTAMP,
@@ -267,7 +261,7 @@ CREATE TABLE file_locks (
     FOREIGN KEY (task_id) REFERENCES tasks(task_id)
 );
 
--- Memory / Knowledge entries (metadata — vectors stored in embedvec)
+-- Memory / Knowledge entries (metadata — vectors stored in database as BLOB)
 CREATE TABLE memory_entries (
     entry_id TEXT PRIMARY KEY,
     workspace_id TEXT NOT NULL,
@@ -277,7 +271,7 @@ CREATE TABLE memory_entries (
     agent_id TEXT,                      -- Which agent stored this
     confidence REAL DEFAULT 1.0,
     tags TEXT,                          -- JSON array
-    vector_id TEXT,                     -- Reference to embedvec index
+    embedding BLOB,                     -- Vector embedding (floats BLOB)
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     accessed_at TIMESTAMP,
     access_count INTEGER DEFAULT 0
@@ -304,9 +298,7 @@ CREATE TABLE embedding_cache (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- Agent Activities (structured activity log — inspired by Tutti's Activity Projection)
--- Lưu trữ structured activity thay vì chỉ raw memories,
--- cho phép agents xem workspace history và context của nhau
+-- Agent Activities (structured activity log)
 CREATE TABLE agent_activities (
     activity_id TEXT PRIMARY KEY,
     workspace_id TEXT NOT NULL,
@@ -321,8 +313,7 @@ CREATE TABLE agent_activities (
     FOREIGN KEY (agent_id) REFERENCES agents(agent_id)
 );
 
--- Shared Contexts (cross-agent context sharing — inspired by Tutti's @ mention system)
--- Cho phép agents chủ động share context cho nhau hoặc broadcast
+-- Shared Contexts (cross-agent context sharing)
 CREATE TABLE shared_contexts (
     context_id TEXT PRIMARY KEY,
     workspace_id TEXT NOT NULL,
@@ -331,7 +322,7 @@ CREATE TABLE shared_contexts (
     context_type TEXT NOT NULL,          -- 'task_context', 'knowledge_share', 'file_reference',
                                         -- 'session_summary', 'delegation_context'
     content TEXT NOT NULL,               -- Structured JSON content
-    resolved BOOLEAN DEFAULT FALSE,      -- Target agent đã đọc/xử lý chưa
+    resolved BOOLEAN DEFAULT FALSE,      -- Has the target agent read/processed this
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     resolved_at TIMESTAMP,
     FOREIGN KEY (source_agent_id) REFERENCES agents(agent_id)
@@ -342,126 +333,88 @@ CREATE TABLE shared_contexts (
 
 ## 6. LLM Orchestration, Embedding & Vector Database Architecture
 
-### 6.1 Ollama LLM Orchestration (Quản lý và Điều phối LLM Ollama)
-Vì Ollama chạy cục bộ trên máy chủ trung tâm và các tác vụ inference (suy luận/tạo vector) tiêu thụ rất nhiều tài nguyên hệ thống (CPU/GPU/RAM/VRAM), Co-Force triển khai một cơ chế điều phối chặt chẽ:
-1. **Concurrency Control (Kiểm soát Luồng Đồng thời):**
-   - Tránh việc gọi Ollama API một cách không kiểm soát từ nhiều agent song song, dễ gây tràn RAM/VRAM hoặc treo Ollama.
-   - Co-Force triển khai một **Mutex Task Queue / Semaphore** trong core thư viện Rust để sắp xếp hàng đợi các yêu cầu inference. Số lượng luồng inference đồng thời được giới hạn cứng (mặc định: `concurrency_limit = 2`), cấu hình qua `config.toml`.
-2. **Model Loading & Lifecycle Management (Nạp và giải phóng Model):**
-   - Ollama tự động tải model vào bộ nhớ khi nhận request đầu tiên và giữ lại trong RAM một thời gian (mặc định 5 phút).
-   - Co-Force tối ưu hóa việc nạp model bằng cách phân tách vai trò:
-     - **Embedding Model (`mxbai-embed-large`):** Model nhỏ (334M params), giữ lâu hơn trong RAM vì tần suất gọi tạo vector rất cao.
-     - **Classifier LLM (`gemma4:e2b`):** Model suy luận (2B params), giải phóng nhanh hơn sau khi hoàn thành tác vụ phân loại hoặc phân tích task.
-   - Hàng đợi của Co-Force đảm bảo rằng khi đang chạy batch embedding kích thước lớn, các yêu cầu classification sẽ được xếp hàng chờ (và ngược lại) để tránh tranh chấp bộ nhớ VRAM cùng lúc.
-3. **Timeout & Retries with Graceful Fallback:**
-   - Đặt ngưỡng timeout cho Ollama API (ví dụ: 30s cho classification, 15s cho embedding).
-   - Nếu Ollama bị sập hoặc mất kết nối:
-     - Đối với **Classification:** Server tự động chuyển sang giải thuật heuristic dựa trên regex/từ khóa (Keyword Classifier) làm phương án dự phòng tạm thời, ghi nhận độ tin cậy thấp (`confidence = 0.5`).
-     - Đối với **Embedding:** Chuyển sang lưu trữ thô ở SQLite, đánh dấu trạng thái `vector_id = null`. Một tiến trình chạy nền (Background sync job) sẽ liên tục retry để quét các bản ghi này và đẩy vào Vector DB ngay khi Ollama hoạt động trở lại.
+### 6.1 Ollama LLM Orchestration
+Since Ollama runs locally on the central server and inference tasks consume substantial hardware resources (CPU/GPU/RAM/VRAM), Co-Force implements a strict orchestration mechanism:
+1. **Concurrency Control:**
+   - Prevents uncontrolled parallel API calls to Ollama from multiple agents, which can lead to VRAM exhaustion or system hangs.
+   - Co-Force implements a **Mutex Task Queue / Semaphore** in the Rust core library to serialize inference requests. The maximum number of concurrent inference runs is capped (default: `concurrency_limit = 2`), configured via `server.toml`.
+2. **Model Loading & Lifecycle Management:**
+   - Ollama loads models into memory on the first request and keeps them cached for a period (default 5 minutes).
+   - Co-Force optimizes loading times by partitioning model roles:
+     - **Embedding Model (`mxbai-embed-large`):** A small model (334M params), kept in memory longer due to high-frequency vector generation requests.
+     - **Classifier LLM (`gemma4:e2b`):** A reasoning model (2B params), released faster after classification or task analysis completes.
+   - The queue ensures that while large-batch embeddings are running, classification requests are queued (and vice versa) to prevent memory contention.
+3. **Timeout & Retries with Fail-Loud Behavior:**
+   - Sets timeouts for the Ollama API (e.g. 30s for classification, 15s for embedding).
+   - If Ollama is offline or crashes:
+     - Under the **No Silent Degradation** policy, the server returns a clear `SERVICE_UNAVAILABLE` error code with a `recovery_action` prompting the user or agent to wait and retry. No lower-quality fallback results are silently generated.
 
-### 6.2 Vector Database (embedvec) Deployment (Triển khai Vector DB cục bộ)
-Co-Force sử dụng `embedvec` — một thư viện cơ sở dữ liệu vector viết hoàn toàn bằng Rust, lưu trữ và truy vấn nhúng trực tiếp trên đĩa cứng:
-1. **Physical Storage Structure (Lưu trữ Vật lý):**
-   - Cơ sở dữ liệu vector được lưu trữ cục bộ trên máy chủ trung tâm tại đường dẫn `~/.co-force/vector_store/`.
-   - Mỗi Workspace có một thư mục index vector riêng biệt nhằm đảm bảo cô lập dữ liệu (data isolation): `~/.co-force/vector_store/{workspaceId}/`.
-   - Cấu trúc thư mục index gồm:
-     - `index.hnsw`: File lưu trữ đồ thị HNSW (Hierarchical Navigable Small World).
-     - `metadata.bin`: File nhị phân lưu trữ ánh xạ giữa Vector ID (UUID) và thông tin metadata bổ sung.
-2. **HNSW Index Tuning (Cấu hình Tham số Đồ thị):**
-   - **M (Max connections per node):** Mặc định đặt `M = 16`. Giúp cân bằng tốt giữa thời gian xây dựng chỉ mục và độ chính xác tìm kiếm.
-   - **ef_construction (Size of dynamic candidate list during construction):** Mặc định đặt `ef_construction = 100`.
-   - **ef_search (Size of dynamic candidate list during search):** Mặc định đặt `ef_search = 50`.
-   - **Distance Metric:** Sử dụng **Cosine Similarity** (Độ tương đồng Cosine) để so sánh các vector nhúng của văn bản.
-3. **SQLite & Vector DB Integration (Liên kết dữ liệu):**
-   - Bảng `memory_entries` trong SQLite lưu thông tin meta (tiêu đề, thẻ tags, loại memory, timestamp).
-   - Trường `vector_id` trong SQLite lưu UUID đại diện cho vector nhúng tương ứng trong `embedvec`.
-   - Khi thực hiện truy vấn semantic search (`co_force_recall`):
-     1. Client gọi API. Server tạo vector nhúng cho câu query.
-     2. Server truy vấn `embedvec` bằng vector nhúng đó để tìm top K `vector_id` có cosine similarity gần nhất.
-     3. Server thực hiện truy vấn `SELECT` trong SQLite sử dụng các `vector_id` này để lấy thông tin chi tiết (nội dung, tags, timestamp) trả về cho Agent.
+### 6.2 Vector Database Deployment
+Co-Force integrates vector embeddings directly inside the SQLite database to simplify deployment and guarantee atomic transactions:
+1. **Storage Structure:**
+   - Embedding vectors are saved as binary BLOBs (`memory_entries.embedding`) directly in the workspace SQLite database file `/var/lib/co-force/data/{workspaceId}/co-force.db`.
+   - Workspace data is fully isolated across database files.
+2. **Cosine Similarity Search:**
+   - Searches are executed via brute-force cosine similarity over the memory vectors in Rust.
+   - At typical workspace scales (a few thousand entries), brute-force computation completes in < 10ms, eliminating the overhead of managing a separate HNSW file index or risks of index corruption.
+3. **SQLite Vector Integration:**
+   - The `memory_entries` table stores metadata alongside the raw vector BLOB.
+   - Query flow (`co_force_recall`):
+     1. Client calls recall. Server embeds the query string.
+     2. Server retrieves all records matching the query filters, computes cosine similarities in memory, and returns the top K results.
 
-### 6.3 LLM Management, Extensibility & First-Time Onboarding (Quản lý, Mở rộng LLM & Thiết lập Lần đầu)
+### 6.3 LLM Management, Extensibility & First-Time Onboarding
 
-Co-Force được thiết kế với tính linh hoạt tối đa (no hardcoding). Cả **Bộ suy luận LLM (Classifier)** và **Bộ nhúng (Embedding)** đều hỗ trợ mở rộng toàn diện thông qua hệ thống Plugin Provider hỗ trợ cả local (Ollama) và cloud (OpenAI, Anthropic, Gemini, OpenRouter...).
+Co-Force is designed with pluggable provider support. Both the **Reasoner LLM** and **Embedding Models** support extensibility through traits.
 
-#### 1. Luồng Thiết lập Cấu hình Lần đầu (First-Time Bootstrapping Wizard)
-Khi Co-Force khởi động lần đầu tiên (hoặc phát hiện file cấu hình `~/.co-force/config.toml` chưa tồn tại), server/desktop app sẽ kích hoạt luồng thiết lập từng bước (Setup Wizard):
+#### 1. Setup Wizard Flow
+When Co-Force starts for the first time (or detects that `/etc/co-force/server.toml` is missing), the server triggers an interactive setup script:
 
 ```mermaid
 graph TD
-    Start([Khởi động Co-Force lần đầu]) --> CheckConfig{Có config.toml chưa?}
-    CheckConfig -->|Có| RunServer[Chạy Server bình thường]
+    Start([Start Co-Force first time]) --> CheckConfig{Is server.toml present?}
+    CheckConfig -->|Yes| RunServer[Run Server]
     
-    CheckConfig -->|Chưa| Wizard[Kích hoạt Setup Wizard]
+    CheckConfig -->|No| Wizard[Start Setup Wizard]
     
     subgraph "Setup Wizard Flow"
-        Wizard --> Step1[Bước 1: Chọn LLM Provider<br/>Ollama | OpenAI | Anthropic | Gemini]
-        Step1 --> CheckCreds{Cần API Key?}
-        CheckCreds -->|Có| InputKey[Nhập API Key hoặc chỉ định ENV]
-        CheckCreds -->|Không / Ollama| SetUrl[Nhập URL endpoint Ollama]
+        Wizard --> Step1[Step 1: Select LLM Provider<br/>Ollama | OpenAI | Anthropic | Gemini]
+        Step1 --> CheckCreds{Needs API Key?}
+        CheckCreds -->|Yes| InputKey[Input API Key to secrets.toml]
+        CheckCreds -->|No / Ollama| SetUrl[Set Ollama URL]
         
-        InputKey --> Step2[Bước 2: Chọn Model LLM<br/>Ví dụ: gpt-4o-mini, claude-3-5-haiku, gemma4:e2b]
+        InputKey --> Step2[Step 2: Choose LLM Model<br/>e.g. gpt-4o-mini, claude-3-5-haiku, gemma4:e2b]
         SetUrl --> Step2
         
-        Step2 --> Step3[Bước 3: Chọn Model Embedding<br/>Ví dụ: text-embedding-3-small, mxbai-embed-large]
+        Step2 --> Step3[Step 3: Choose Embedding Model<br/>e.g. text-embedding-3-small, mxbai-embed-large]
         
-        Step3 --> SaveConfig[Ghi thông tin vào ~/.co-force/config.toml]
+        Step3 --> SaveConfig[Save to server.toml]
     end
     
     SaveConfig --> RunServer
 ```
 
-- **Chế độ CLI:** Server hiển thị giao diện tương tác terminal (interactive CLI prompts) để người dùng lựa chọn provider, model và nhập API Key.
-- **Chế độ Desktop App (Tauri):** Hiển thị màn hình cấu hình onboarding trực quan, tự động gọi API quét các model hiện có (ví dụ: quét qua `GET /api/tags` của Ollama) để điền vào danh sách gợi ý cho người dùng chọn.
+- **CLI Mode:** Terminal prompts guide the user through provider selection, model choice, and key validation.
+- **Desktop/Web Dashboard:** Renders an onboarding wizard, querying available local models from Ollama to populate choices.
 
-#### 2. Kiến trúc Mở rộng Toàn diện (Fully Extensible Providers)
-Cả hai tác vụ Embedding và LLM suy luận đều sử dụng mô hình trừu tượng hóa dạng Trait trong Rust:
-- **`EmbeddingProvider` Trait:** Định nghĩa giao thức tạo nhúng bất kể là cục bộ hay đám mây.
-  - Nếu chọn **Ollama**: Kết nối API local tạo nhúng.
-  - Nếu chọn **OpenAI/Gemini**: Kết nối cloud API tương ứng.
-  - Số chiều nhúng (Dimension Mapping) của `embedvec` sẽ được tự động điều chỉnh theo model được cấu hình (ví dụ: 1024 chiều cho `mxbai-embed-large`, 1536 chiều cho `text-embedding-3-small`).
-- **`LlmProvider` Trait:** Định nghĩa giao thức xử lý chat completion và classification.
+#### 2. Extensible Architecture
+Embedding and classification tasks interface through abstract Rust traits:
+- **`EmbeddingProvider` Trait:** Defines embedding generation protocols.
+  - **Ollama**: Connects to the local API.
+  - **OpenAI/Gemini**: Calls cloud endpoints.
+  - Vector dimensions map dynamically based on the configured model (e.g. 1024d for `mxbai-embed-large`, 1536d for `text-embedding-3-small`).
+- **`LlmProvider` Trait:** Defines completion and classification interfaces.
 
-#### 3. Configuration Schema (`config.toml`):
-```toml
-[llm]
-default_classifier_provider = "ollama"  # Hoặc openai, anthropic, gemini...
-default_embedding_provider = "ollama"   # Hoặc openai, gemini...
+#### 3. Configuration Schema (`server.toml`):
+See the finalized configuration schema in [Plan 06](file:///Users/trungtran/ai-agents/co-force/docs/plans/06_server_deployment_and_tunnel.md#L214).
 
-[ollama]
-url = "http://localhost:11434"
-embedding_model = "mxbai-embed-large"
-classifier_model = "gemma4:e2b"
-concurrency_limit = 2
-
-[llm.providers.openai]
-api_key = "env:OPENAI_API_KEY"
-embedding_model = "text-embedding-3-small"
-classifier_model = "gpt-4o-mini"
-
-[llm.providers.anthropic]
-api_key = "env:ANTHROPIC_API_KEY"
-classifier_model = "claude-3-5-haiku-latest"
-```
-
-#### 4. Dynamic Provider Switching (Chuyển đổi Động):
-Người dùng hoặc Agent có thể thay đổi nhà cung cấp và model trong runtime thông qua lệnh gọi cấu hình:
-- `co_force_config({key: "llm.default_classifier_provider", value: "openai"})`
-- `co_force_config({key: "llm.default_embedding_provider", value: "openai"})`
-Mọi thay đổi này sẽ tự động cập nhật cấu hình hoạt động và lưu đè lên file `config.toml`.
-
-### 6.4 Embedding Strategy (Chiến lược tạo Vector Nhúng)
-1. **Dimension Mapping (Ánh xạ Kích thước):**
-   - Kích thước vector nhúng mặc định được thiết kế là **1024 chiều** (tương thích `mxbai-embed-large`).
-   - Nếu đổi sang model khác (ví dụ: `text-embedding-3-small` - 1536 chiều, hoặc `nomic-embed-text` - 768 chiều), index của `embedvec` cho workspace đó sẽ tự động được khởi tạo lại với số chiều mới.
-2. **Chunking & Batching Strategy (Chiến lược Cắt đoạn & Gửi theo lô):**
-   - Để tránh quá tải bộ nhớ và timeout API khi tạo nhúng cho các file code hoặc tài liệu lớn:
-     - Co-Force áp dụng **Batching** tối đa **16 chunks** mỗi lượt gọi API tạo embedding.
-     - Sử dụng cơ chế tạo nhúng bất đồng bộ (Async queue).
-3. **Embedding Cache (Bộ đệm nhúng):**
-   - Để tránh việc tính toán lại vector nhúng cho cùng một đoạn văn bản hoặc file code chưa thay đổi:
-     - SQLite duy trì bảng `embedding_cache` (sẽ được bổ sung vào schema DB) lưu hash SHA-256 của văn bản nguồn làm khóa (key) và giá trị vector nhúng làm kết quả (value).
-     - Trước khi gọi Ollama API để tạo embedding, server sẽ kiểm tra trong bảng cache. Nếu khớp hash SHA-256, server sẽ sử dụng ngay vector có sẵn, giảm tải tới 80% số lượt gọi tạo nhúng khi lập chỉ mục workspace.
+### 6.4 Embedding Strategy
+1. **Dimension Mapping:**
+   - Supported dimensions adapt to the configured model. Changing models triggers a background re-embedding daemon.
+2. **Chunking & Batching:**
+   - Embeddings are generated in batches (max 16 chunks per API call) via an async queue to prevent timeouts.
+3. **Embedding Cache:**
+   - The `embedding_cache` table stores SHA-256 hashes of text chunks mapped to computed float arrays. Matches bypass LLM computation entirely, saving up to 80% of processing during re-indexing.
 
 ---
 
@@ -519,31 +472,20 @@ Mọi thay đổi này sẽ tự động cập nhật cấu hình hoạt động
 #### UC-01: Agent Check-in (First Time — New Workspace / New Agent Registration)
 
 **Actor:** AI Agent  
-**Preconditions:** Agent kết nối tới Co-Force Central Server qua SSE, mở một thư mục dự án chưa có file `.co-force/agent.json` hoặc chưa có định danh `agentId`.  
-**Postconditions:** Workspace được định danh, Agent được đăng ký thành công trên Central Server, file cấu hình cục bộ được ghi nhận.
+**Preconditions:** Agent connects to the Co-Force Central Server via HTTP, pointing to a project folder that lacks a local `.co-force/agent.json` cache or has no active session.  
+**Postconditions:** Workspace is resolved, the agent is registered on the Central Server, and the local session cache is written.
 
-##### 📋 Định nghĩa "Agent Mới", Đa Agent và Giải pháp Chống trôi Định danh do Mất Context (Context Loss)
+##### 📋 Definition of "New Agent", Multi-Agent Support, and Identity Drift Solutions
 
-Một Agent instance được xác định là **mới** trong hệ thống và cần đăng ký mới nếu rơi vào các trường hợp:
-1. **Lần đầu kết nối (Fresh setup):** Máy trạm chưa có file `.co-force/agent.json`.
-2. **Session Reset:** Agent kết nối không gửi kèm `agentId` (hoặc gửi `agentId: null`), yêu cầu cấp một session ID mới.
-3. **Thay đổi vai trò/Môi trường:** Khi cặp định danh khóa chính (`workspaceId`, `machineId` / `clientIp`, `agentName`, `role`) chưa tồn tại trong cơ sở dữ liệu SQLite của Central Server.
+An agent instance is identified as **new** if:
+1. **Fresh setup:** The developer machine does not contain `.co-force/agent.json`.
+2. **Session reset:** The agent connects without an `agentId` (or passes `agentId: null`).
+3. **Identity change:** The identity tuple (`workspaceId`, `machineId`, `agentName`, `role`) does not exist in the database.
 
-**Cơ chế định danh và Hỗ trợ Đa Agent (Multi-Agent Support):**
-- Trên cùng một máy trạm, người dùng có thể mở nhiều terminal (ví dụ: 1 Claude CLI, 2 Antigravity) hoặc chạy nhiều workspace song song. Để phân định chính xác mỗi tiến trình Agent, client-side launcher (hoặc IDE extension) tự động sinh một mã `agentSessionId` duy nhất (UUID v4) dựa trên PID của tiến trình cha (`PPID`) hoặc ID của terminal tab (`TERM_SESSION_ID`).
-- Mã `agentSessionId` này cùng với `workspaceId`, `machineId`, `agentName`, và `role` được truyền làm **Query Parameters** khi thiết lập kết nối stream SSE tới Central Server:
-  `http://<server-ip>/sse?workspaceId=...&machineId=...&agentSessionId=...&agentName=...&role=...`
-- **Implicit Session Binding (Chống trôi Context):** Đối với các cuộc hội thoại dài, LLM Agent thường xuyên bị nén (compact) hoặc xóa bộ nhớ ngữ cảnh (context window), dẫn tới việc mất biến `agentId` trong memory của nó. Để giải quyết, Co-Force áp dụng cơ chế định danh ẩn:
-  - Central Server duy trì bảng map trong bộ nhớ liên kết **kết nối mạng HTTP/SSE** với bản ghi Agent trong DB.
-  - Các tool gọi từ Agent (như `whoami()`, `lock_files()`, `update_task()`) **không yêu cầu truyền `agentId` làm tham số đầu vào**.
-  - Server tự động điền `agentId` dựa trên context kết nối của request. LLM Agent hoàn toàn không cần ghi nhớ ID của mình để hoạt động, loại bỏ 100% rủi ro mất định danh.
-
-**Cơ chế định danh:**
-- `workspaceId`: Bắt nguồn từ mã băm của Git Remote URL của dự án, hoặc tự sinh UUID ghi vào `.co-force/workspace.json` nếu dự án không có git.
-- `machineId`: Mã định danh phần cứng của máy trạm (Mac Address hoặc CPU serial) gửi lên trong gói tin HTTP.
-- `agentName`: Tên của AI client (như `Cursor-Agent`, `Gemini-Antigravity`).
-- `role`: Vai trò nghiệp vụ được chỉ định trong prompt của user (mặc định: `developer`).
-
+**Multi-Agent Support & Session Binding:**
+- Developers can run multiple terminals or parallel sessions. The client-side launcher (or IDE shell integration) generates a unique `agentSessionId` (UUID v4) using process variables.
+- The `agentSessionId` along with `workspaceId`, `machineId`, `agentName`, and `role` are transmitted during check-in.
+- **Implicit Session Binding:** To prevent LLM context compaction from losing track of the agent's ID, Co-Force maps HTTP/Streamable sessions directly to active agent records. Agents call tools (e.g. `whoami`, `lock_files`) without passing `agentId` as a parameter. The server resolves identity from the connection context, eliminating context drift.
 
 ```mermaid
 sequenceDiagram
@@ -564,7 +506,7 @@ sequenceDiagram
     DB-->>MCP: ❌ Not found
     
     MCP->>DB: INSERT INTO agents (agentId, workspaceId, machineId, agentName, role, state='initialized')
-    MCP-->>Agent: Response: {<br/>  agentId: "new-uuid-v4",<br/>  workspaceId: "ws-uuid-v4",<br/>  role: "developer",<br/>  onboardingRequired: true,<br/>  message: "Welcome! Agent registered successfully."<br/>}
+    MCP-->>Agent: Response: {<br/>  agentId: "new-uuid-v4",<br/>  workspaceId: "ws-uuid-v4",<br/>  role: "developer",<br/>  onboardingRequired: true,<br/>  message: "Welcome! Agent registered successfully."<br>}
 
     Agent->>FS: Create .co-force/ directory (ignored by Git)
     Agent->>FS: Write .co-force/agent.json {agentId, workspaceId, role}
@@ -575,16 +517,15 @@ sequenceDiagram
 ```
 
 **Alternative Flows:**
-- **A1: Thư mục dự án đã có `.co-force/agent.json` nhưng `agentId` không khớp trên server:** Server sẽ coi như đăng ký lại, cấp `agentId` mới và ghi đè file cục bộ.
-- **A2: Lỗi ghi file cục bộ:** Trả về lỗi hướng dẫn người dùng cấp quyền ghi thư mục dự án.
+- **A1: Local `.co-force/agent.json` exists but the ID is unknown to the server:** Treated as a new registration, writing a fresh `agentId` to the local cache.
 
 ---
 
 #### UC-02: Agent Check-in (Returning — Existing Workspace)
 
 **Actor:** AI Agent  
-**Preconditions:** Workspace đã tồn tại cục bộ, file `.co-force/agent.json` có chứa `agentId` và `workspaceId` hợp lệ.  
-**Postconditions:** Phục hồi phiên làm việc của Agent, đồng bộ hóa các task và locks dở dang.
+**Preconditions:** Workspace exists, local `.co-force/agent.json` contains a valid `agentId` and `workspaceId`.  
+**Postconditions:** Restores the agent's session, synchronizing active tasks and locks.
 
 ```mermaid
 sequenceDiagram
@@ -597,7 +538,6 @@ sequenceDiagram
     FS-->>Agent: Returns {agentId: "uuid-1234", workspaceId: "ws-uuid"}
 
     Agent->>MCP: co_force_check_in(workspacePath, agentName, role, agentId = "uuid-1234")
-
     MCP->>DB: SELECT * FROM agents WHERE agentId = 'uuid-1234' AND workspaceId = 'ws-uuid'
 
     alt Agent Exists in Central DB
@@ -620,13 +560,12 @@ sequenceDiagram
 #### UC-03: Agent Whoami (Quick Status)
 
 **Actor:** AI Agent  
-**Preconditions:** Agent đã check-in  
-**Mục đích:** Lightweight query — agent cần biết nhanh context hiện tại (được xác định tự động qua connection context)
+**Preconditions:** Agent has checked in.  
+**Objective:** Lightweight query to resolve active context.
 
 **Tool:** `co_force_whoami()`
 
 **Response:**
-
 ```json
 {
   "agentId": "...",
@@ -645,21 +584,19 @@ sequenceDiagram
 #### UC-04: Agent Heartbeat / Disconnect Detection
 
 **Actor:** Co-Force Central Server (automatic)  
-**Preconditions:** Agent đã check-in và đang có kết nối SSE mở.
+**Preconditions:** Agent checked in, maintaining active connection.
 
-**Cơ chế Giám sát Lỏng lẻo (SSE Connection & Keep-Alive Monitoring):**
-
-- **Phát hiện ngắt kết nối Instant:** Vì Agent kết nối qua stream SSE (HTTP persistent), Central Server theo dõi trạng thái TCP socket. Khi terminal bị đóng, tiến trình Agent bị kill, hoặc mạng lỗi, kết nối SSE sẽ bị đứt. Server phát hiện ngắt kết nối lập tức (instant detection).
-- **Trạng thái Tạm thời (Disconnected & Paused Task):**
-  - Khi đứt kết nối, trạng thái Agent chuyển sang `disconnected`.
-  - Toàn bộ các task đang ở trạng thái `in_progress` của Agent này được chuyển tạm thời sang `paused` (tạm dừng) để giữ vị trí và tránh xung đột.
-- **Grace Period (Thời gian ân hạn):** Server kích hoạt bộ đếm thời gian chờ phục hồi (Grace Period - mặc định **2 phút**).
-  - Nếu Agent reconnect và check-in lại trong vòng 2 phút, trạng thái Agent đổi lại thành `working`, khôi phục kết nối và tiếp tục giữ các lock và task cũ.
-- **Auto-Reclaiming (Tự động thu hồi tài nguyên sau timeout):**
-  - Nếu hết 2 phút mà Agent không kết nối lại, hệ thống sẽ thực hiện thu hồi tài nguyên:
-    1. **Giải phóng file locks:** Toàn bộ lock của Agent được xóa khỏi SQLite.
-    2. **Trả task về Backlog:** Task chuyển từ `paused` về `approved` (xóa `assignedAgentId`) để Agent khác có thể pick up.
-    3. **Chặn ghi:** Reset thuộc tính file trên máy trạm của Agent cũ về Read-only (`chmod -w`).
+**Monitoring Mechanism:**
+- **Instant Disconnect Detection:** Since clients connect via persistent HTTP connections, the server monitors socket states. Closed terminals, killed agent processes, or network failures close the connection, immediately updating the agent's state to `disconnected`.
+- **Temporary State (Paused Tasks):**
+  - Upon disconnect, the agent's state becomes `disconnected`.
+  - All tasks marked `in_progress` assigned to the agent are set to `paused` to preserve locks and avoid coordination conflicts.
+- **Grace Period:** The server starts a **2-minute** countdown.
+  - Reconnecting within 2 minutes restores state to `working`, retaining old locks and tasks.
+- **Auto-Reclaiming (Post-Timeout):**
+  - If the grace period expires:
+    1. **Release file locks:** All locks associated with the agent are cleared.
+    2. **Return tasks to Backlog:** Tasks transition from `paused` back to `approved` (removing `assignedAgentId`) for other agents to claim.
 
 ```mermaid
 stateDiagram-v2
@@ -667,19 +604,18 @@ stateDiagram-v2
     online_idle --> online_working: lock_files / update_task(in_progress)
     online_working --> online_idle: update_task(completed) / unlock_files
     
-    online_working --> disconnected_paused: SSE connection drops (Instant)
-    online_idle --> disconnected_idle: SSE connection drops (Instant)
+    online_working --> disconnected_paused: Connection drops (Instant)
+    online_idle --> disconnected_idle: Connection drops (Instant)
     
-    disconnected_paused --> online_working: Reconnect & check-in within 2 min (Restore)
-    disconnected_idle --> online_idle: Reconnect & check-in within 2 min (Restore)
+    disconnected_paused --> online_working: Reconnect within 2 mins (Restore)
+    disconnected_idle --> online_idle: Reconnect within 2 mins (Restore)
     
-    disconnected_paused --> terminated_released: Timeout 2 min / Clean exit
-    disconnected_idle --> terminated_released: Timeout 2 min / Clean exit
+    disconnected_paused --> terminated_released: Timeout 2 mins
+    disconnected_idle --> terminated_released: Timeout 2 mins
     
     state terminated_released {
         [*] --> ReleaseLocks
-        ReleaseLocks --> ReturnTasksToBacklog: Xóa assignedAgentId & đặt Task = approved
-        ReturnTasksToBacklog --> OSFileLock: Reset files = Read-only (chmod -w)
+        ReleaseLocks --> ReturnTasksToBacklog: Clear assignedAgentId & set Task to approved
     }
 ```
 
@@ -689,82 +625,72 @@ stateDiagram-v2
 
 #### UC-05: User Prompt → Task Analysis & Draft
 
-**Actor:** AI Agent (triggered by User prompt)  
-**Preconditions:** Agent đã check-in, nhận prompt từ user
+**Actor:** AI Agent  
+**Preconditions:** Agent checked in, receives user prompt.
 
 ```mermaid
 flowchart TD
     Start([User Prompt]) --> CheckIn["co_force_check_in()"]
-    CheckIn --> GetContext["Nhận: role, pending tasks,<br/>other agents, workspace status"]
-    GetContext --> Analyze["Agent phân tích prompt<br/>+ existing context"]
+    CheckIn --> GetContext["Receive: role, pending tasks,<br/>other agents, workspace status"]
+    GetContext --> Analyze["Agent analyzes prompt<br/>+ existing context"]
 
-    Analyze --> RecallMemory["co_force_recall(query)<br/>Tìm memory/knowledge liên quan"]
-    RecallMemory --> GetSkills["co_force_list_skills()<br/>Liệt kê skills có sẵn"]
+    Analyze --> RecallMemory["co_force_recall(query)<br/>Find related memories"]
+    RecallMemory --> GetSkills["co_force_list_skills()<br/>List available skills"]
 
-    GetSkills --> DraftTasks["Agent draft task list:<br/>• Mục tiêu<br/>• Use cases<br/>• Prerequisites<br/>• Verification plan<br/>• Required skills<br/>• Impact analysis"]
+    GetSkills --> DraftTasks["Agent drafts task list:<br/>• Objective<br/>• Use cases<br/>• Prerequisites<br/>• Verification plan<br/>• Required skills<br/>• Impact analysis"]
 
-    DraftTasks --> SaveDraft["co_force_create_tasks(tasks[])<br/>Lưu với status = 'draft'"]
+    DraftTasks --> SaveDraft["co_force_create_tasks(tasks[])<br/>Save with status = 'draft'"]
 
     SaveDraft --> End([Tasks saved as draft])
 ```
 
-**Task Structure đầy đủ** (mỗi task phải có):
+**Task Fields:**
 
-| Field              | Bắt buộc | Mô tả                                            |
-| :----------------- | :------- | :----------------------------------------------- |
-| `title`            | ✅       | Tên task ngắn gọn                                |
-| `objective`        | ✅       | Mục tiêu cụ thể                                  |
-| `useCases`         | ✅       | Danh sách use case (actor, flow, postconditions) |
-| `prerequisites`    | ✅       | Điều kiện để triển khai                          |
-| `verificationPlan` | ✅       | Verify như thế nào (test, manual check)          |
-| `requiredSkills`   | ✅       | Skill cần có                                     |
-| `impactAnalysis`   | ✅       | Nếu fail → ảnh hưởng gì                          |
-| `lockedFiles`      | ❌       | Files sẽ sửa (khai báo khi bắt đầu)              |
-| `status`           | Auto     | draft → pending_review → approved → ...          |
+| Field              | Required | Description                                            |
+| :----------------- | :------- | :----------------------------------------------------- |
+| `title`            | ✅       | Concise name of the task                               |
+| `objective`        | ✅       | Concrete objective                                     |
+| `useCases`         | ✅       | Array of use cases (actors, flows, postconditions)     |
+| `prerequisites`    | ✅       | Prerequisites for execution                            |
+| `verificationPlan` | ✅       | Concrete verification plan (test cases, manual checks) |
+| `requiredSkills`   | ✅       | Required skill profiles                                |
+| `impactAnalysis`   | ✅       | Impact assessment: {affectedTasks, systemImpact}       |
+| `lockedFiles`      | ❌       | File paths to lock (claimed on start)                  |
+| `status`           | Auto     | draft → spec_review → awaiting_approval → approved...  |
 
 ---
 
 #### UC-06: Task Recheck (Subagent Validation)
 
-**Actor:** AI Agent (as subagent role)  
-**Preconditions:** Tasks đã được draft
-
-**Mục đích:** Phát hiện lỗ hổng logic, business gaps, thiếu use case TRƯỚC khi user approve.
+**Actor:** AI Agent (as subagent / quality role)  
+**Preconditions:** Tasks are drafted.  
+**Objective:** Validate specifications, logic gaps, and edge cases before user approval.
 
 ```mermaid
 flowchart TD
     Start(["Tasks drafted"]) --> CallRecheck["co_force_recheck_tasks(taskIds[])"]
 
     CallRecheck --> LoadTasks["Load all draft tasks"]
-    LoadTasks --> AnalyzeGaps["Phân tích:<br/>1. Lỗ hổng logic giữa các tasks?<br/>2. Business rule nào bị bỏ sót?<br/>3. Use case nào thiếu?<br/>4. Edge case chưa cover?<br/>5. Task dependency đúng chưa?<br/>6. Impact analysis hợp lý?"]
+    LoadTasks --> AnalyzeGaps["Analyze:<br/>1. Logic gaps between tasks?<br/>2. Missing business rules?<br/>3. Missing use cases?<br/>4. Edge cases covered?<br/>5. Correct task dependencies?<br/>6. Sound impact analysis?"]
 
-    AnalyzeGaps --> HasIssues{Có vấn đề?}
+    AnalyzeGaps --> HasIssues{Issues found?}
 
-    HasIssues -->|Có| GenerateQuestions["Tạo danh sách câu hỏi<br/>cho user bổ sung"]
-    GenerateQuestions --> ReturnIssues["Return: {<br/>  issues: [...],<br/>  questions: [...],<br/>  suggestions: [...]<br/>}"]
-    ReturnIssues --> AskUser["Agent hỏi user<br/>từng câu hỏi"]
-    AskUser --> UpdateTasks["co_force_update_task()<br/>Cập nhật theo feedback"]
+    HasIssues -->|Yes| GenerateQuestions["Generate questions<br/>for the user"]
+    GenerateQuestions --> ReturnIssues["Return: {<br/>  issues: [...],<br/>  questions: [...],<br/>  suggestions: [...]<br>}"]
+    ReturnIssues --> AskUser["Agent asks user<br/>for feedback"]
+    AskUser --> UpdateTasks["co_force_update_task()<br/>Update based on feedback"]
     UpdateTasks --> CallRecheck
 
-    HasIssues -->|Không| Approved["Return: {<br/>  status: 'validated',<br/>  confidence: 0.95<br/>}"]
-    Approved --> PresentUser["Agent trình bày cho user:<br/>• Task list<br/>• Reasoning<br/>• Recheck result"]
-    PresentUser --> End([Chờ User confirm])
+    HasIssues -->|No| Approved["Return: {<br/>  status: 'validated',<br/>  confidence: 0.95<br>}"]
+    Approved --> PresentUser["Agent presents task list,<br/>reasoning, and validation report"]
+    PresentUser --> End([Awaiting User approval])
 ```
-
-**Recheck sẽ kiểm tra:**
-
-1. ❓ Có use case nào mà 2 user cùng thao tác đồng thời không?
-2. ❓ Edge case: input rỗng, quá dài, ký tự đặc biệt?
-3. ❓ Security: SQL injection, XSS, CSRF?
-4. ❓ Task A và Task B có sửa cùng file không? (cần delegation)
-5. ❓ Nếu Task B fail, Task A có bị ảnh hưởng không?
-6. ❓ Có missing prerequisite nào không?
 
 ---
 
 #### UC-07: User Task Approval
 
-**Actor:** AI Agent (proxy for User decision)
+**Actor:** AI Agent (representing User choice)
 
 ```mermaid
 sequenceDiagram
@@ -772,19 +698,17 @@ sequenceDiagram
     participant Agent as 🤖 AI Agent
     participant MCP as ⚙️ Co-Force MCP
 
-    Agent->>User: "Đây là danh sách tasks:<br/>1. [Task A] - vì lý do X<br/>2. [Task B] - vì lý do Y<br/>Bạn đồng ý không?"
+    Agent->>User: "Here is the task plan:<br/>1. [Task A] - objective X<br/>2. [Task B] - objective Y<br/>Do you approve?"
 
-    User->>Agent: "OK, nhưng sửa Task B thành..."
+    User->>Agent: "Approved, but modify Task B to..."
 
     Agent->>MCP: co_force_update_task(taskB, changes)
     Agent->>MCP: co_force_approve_tasks([taskA, taskB])
     MCP->>MCP: UPDATE status = 'approved' WHERE task_id IN (...)
     MCP-->>Agent: Tasks approved
-
-    Note over Agent: KHÔNG triển khai task<br/>khi chưa có approval
 ```
 
-**Rule quan trọng:** Agent **KHÔNG ĐƯỢC** tự ý triển khai task khi chưa có explicit approval từ user.
+**Rule:** Agents **MUST NOT** execute tasks without user approval.
 
 ---
 
@@ -802,14 +726,13 @@ sequenceDiagram
 
     Agent->>MCP: co_force_update_task(taskId, {status: "in_progress", progress: "Starting implementation"})
 
-    loop Triển khai từng bước
+    loop Active Development
         Agent->>Agent: Implement code changes
         Agent->>MCP: co_force_update_task(taskId, {progress: "Step 2/5: Created auth middleware"})
     end
 
-    Agent->>MCP: co_force_update_task(taskId, {status: "completed", result: "Login implemented with JWT"})
-    Agent->>MCP: co_force_unlock_files(["src/auth/login.ts", "src/auth/types.ts"])
-    Agent->>MCP: co_force_store_memory({content: "Login dùng JWT + bcrypt, file auth/login.ts", type: "auto"})
+    Agent->>MCP: co_force_submit_verification(taskId, evidence)
+    Note over Agent: task transitions to code_review gate
 ```
 
 ---
@@ -821,14 +744,14 @@ sequenceDiagram
 ```mermaid
 flowchart TD
     Fail(["Task B Failed"]) --> UpdateFail["co_force_update_task(taskB,<br/>{status: 'failed', error: '...'})"]
-    UpdateFail --> CheckImpact["MCP tự động kiểm tra<br/>impact_analysis.affectedTasks"]
+    UpdateFail --> CheckImpact["Server checks<br/>impact_analysis.affectedTasks"]
 
-    CheckImpact --> HasDependent{Có task phụ thuộc?}
-    HasDependent -->|Có| BlockDependents["UPDATE status = 'blocked'<br/>cho các task phụ thuộc"]
-    BlockDependents --> Notify["Return: {<br/>  blockedTasks: [Task C, Task D],<br/>  systemImpact: 'high',<br/>  recommendation: 'Fix Task B first'<br/>}"]
-    HasDependent -->|Không| NoImpact["Return: {<br/>  systemImpact: 'none'<br/>}"]
+    CheckImpact --> HasDependent{Dependent tasks exist?}
+    HasDependent -->|Yes| BlockDependents["UPDATE status = 'blocked'<br/>for dependent tasks"]
+    BlockDependents --> Notify["Return: {<br/>  blockedTasks: [Task C, Task D],<br/>  systemImpact: 'high',<br/>  recommendation: 'Fix Task B first'<br>}"]
+    HasDependent -->|No| NoImpact["Return: {<br/>  systemImpact: 'none'<br>}"]
 
-    Notify --> AgentDecide["Agent thông báo user<br/>và đề xuất recovery plan"]
+    Notify --> AgentDecide["Agent reports to user<br/>and proposes recovery plan"]
 ```
 
 ---
@@ -837,8 +760,8 @@ flowchart TD
 
 #### UC-12: Cross-Agent Task Delegation
 
-**Actor:** AI Agent 1 (delegator)  
-**Preconditions:** Agent 1 đang làm task, phát hiện cần agent khác hỗ trợ
+**Actor:** AI Agent  
+**Preconditions:** Agent executing a task identifies a sub-component suitable for delegation.
 
 ```mermaid
 sequenceDiagram
@@ -847,29 +770,24 @@ sequenceDiagram
     participant DB as 🗄️ SQLite
     participant A2 as 🤖 Agent 2 (Available)
 
-    Note over A1: Đang implement Login,<br/>cần SSO component riêng
+    Note over A1: Implementing Login,<br/>needs a separate SSO module
 
-    A1->>MCP: co_force_delegate_task({<br/>  title: "Implement SSO OAuth2",<br/>  objective: "...",<br/>  delegatedFrom: "agent1-id",<br/>  context: "Login đang dùng JWT,<br/>  cần SSO tương thích",<br/>  avoidFiles: ["src/auth/login.ts",<br/>  "src/auth/middleware.ts"],<br/>  requiredSkills: ["oauth2", "sso"]<br/>})
+    A1->>MCP: co_force_delegate_task({<br/>  title: "Implement SSO OAuth2",<br/>  objective: "...",<br/>  delegatedFrom: "agent1-id",<br/>  context: "Login uses JWT,<br/>  needs compatible SSO interface",<br/>  avoidFiles: ["src/auth/login.ts",<br/>  "src/auth/middleware.ts"],<br/>  requiredSkills: ["oauth2", "sso"]<br/>})
 
-    MCP->>DB: INSERT task (status: 'pending_delegation')
-    MCP->>DB: Note avoidFiles in task record
+    MCP->>DB: INSERT task (status: 'approved')
+    MCP->>DB: Record avoidFiles constraints
     MCP-->>A1: Task delegated ✅ taskId: "..."
 
-    Note over A2: Agent 2 kết nối sau đó
+    Note over A2: Agent 2 checks in later
 
     A2->>MCP: co_force_check_in(workspacePath)
-    MCP->>DB: SELECT tasks WHERE status = 'pending_delegation'
-    MCP-->>A2: {<br/>  delegatedTasks: [{<br/>    title: "Implement SSO OAuth2",<br/>    from: "Agent 1 (Login)",<br/>    avoidFiles: ["src/auth/login.ts", ...],<br/>    context: "..."<br/>  }]<br/>}
+    MCP->>DB: SELECT tasks WHERE status = 'approved' AND assignedAgentId IS NULL
+    MCP-->>A2: Available tasks list
 
     A2->>MCP: co_force_update_task(taskId, {<br/>  status: "in_progress",<br/>  assignedAgentId: "agent2-id"<br/>})
     A2->>MCP: co_force_lock_files(["src/auth/sso.ts", "src/auth/oauth2.ts"])
 
-    Note over A1,A2: Agent 1 & Agent 2 work in parallel<br/>on DIFFERENT files — no conflict
-
-    A2->>MCP: co_force_update_task(taskId, {status: "completed"})
-    A2->>MCP: co_force_unlock_files([...])
-
-    Note over A1,A2: Merge code via git after both complete
+    Note over A1,A2: Run in parallel on disjoint files
 ```
 
 ---
@@ -882,14 +800,14 @@ flowchart TD
         A1["co_force_lock_files(['/src/A.ts'])"]
         A1 --> Check1{File already locked?}
         Check1 -->|No| Lock1["INSERT INTO file_locks ✅"]
-        Check1 -->|Yes by another agent| Conflict1["❌ CONFLICT: {<br/>lockedBy: Agent 2,<br/>since: 5min ago,<br/>task: 'Implement SSO'<br/>}"]
-        Check1 -->|Yes by expired agent| AutoRelease["Auto-release stale lock<br/>(agent disconnected > 30min)"]
+        Check1 -->|Yes by another agent| Conflict1["❌ CONFLICT: {<br/>lockedBy: Agent 2,<br/>since: 5min ago,<br/>task: 'Implement SSO'<br>}"]
+        Check1 -->|Yes by expired agent| AutoRelease["Auto-release stale lock<br/>(grace period expired)"]
         AutoRelease --> Lock1
     end
 
     subgraph "Agent 2 checks conflicts"
         A2["co_force_check_conflicts(['/src/A.ts', '/src/B.ts'])"]
-        A2 --> Result["Return: {<br/>  '/src/A.ts': {locked: true, by: 'Agent 1'},<br/>  '/src/B.ts': {locked: false}<br/>}"]
+        A2 --> Result["Return: {<br/>  '/src/A.ts': {locked: true, by: 'Agent 1'},<br/>  '/src/B.ts': {locked: false}<br>}"]
     end
 ```
 
@@ -899,8 +817,7 @@ flowchart TD
 
 **Tool:** `co_force_list_agents()`
 
-**Response example:**
-
+**Response Example:**
 ```json
 {
   "workspace": "co-force",
@@ -951,16 +868,13 @@ flowchart TD
     Classify -->|Yes| LLMClassify["Call Ollama gemma4:e2b<br/>Prompt: 'Classify this as<br/>memory/knowledge/skill:<br/>[content]'"]
     Classify -->|No| UseGiven["Use given type"]
 
-    LLMClassify --> StoreVec["Store vector in embedvec"]
-    UseGiven --> StoreVec
+    LLMClassify --> StoreMeta["INSERT INTO memory_entries<br/>(entry_id, type, content, embedding, tags)"]
+    UseGiven --> StoreMeta
 
-    StoreVec --> StoreMeta["INSERT INTO memory_entries<br/>(entry_id, type, content, vector_id, tags)"]
-
-    StoreMeta --> Return["Return: {<br/>  entryId, type,<br/>  confidence: 0.92<br/>}"]
+    StoreMeta --> Return["Return: {<br/>  entryId, type,<br/>  confidence: 0.92<br>}"]
 ```
 
 **Classification Prompt (sent to Ollama):**
-
 ```
 You are a classifier. Categorize the following text into exactly ONE category:
 
@@ -987,7 +901,6 @@ sequenceDiagram
     participant Agent as 🤖 AI Agent
     participant MCP as ⚙️ Co-Force MCP
     participant Ollama as 🦙 Ollama
-    participant Vec as 🧠 Embedvec
     participant DB as 🗄️ SQLite
 
     Agent->>MCP: co_force_recall({<br/>  query: "how to handle JWT refresh tokens",<br/>  types: ["knowledge", "skill"],<br/>  limit: 5<br/>})
@@ -995,13 +908,8 @@ sequenceDiagram
     MCP->>Ollama: embed("how to handle JWT refresh tokens")
     Ollama-->>MCP: vector[1024]
 
-    MCP->>Vec: cosine_search(vector, top_k=5)
-    Vec-->>MCP: [{vector_id, score}, ...]
-
-    MCP->>DB: SELECT * FROM memory_entries<br/>WHERE vector_id IN (...)<br/>AND entry_type IN ('knowledge', 'skill')
-    DB-->>MCP: entries[]
-
-    MCP->>DB: UPDATE memory_entries SET<br/>access_count = access_count + 1,<br/>accessed_at = NOW()
+    MCP->>DB: Compute cosine similarity in-memory,<br/>filter by types, order by score
+    DB-->>MCP: results[]
 
     MCP-->>Agent: [{<br/>  content: "JWT refresh: use rotating tokens...",<br/>  type: "knowledge",<br/>  relevance: 0.89,<br/>  source: "session-2026-06-25"<br/>}, ...]
 ```
@@ -1012,22 +920,21 @@ sequenceDiagram
 
 ```mermaid
 flowchart TD
-    Trigger(["Agent hoàn thành task<br/>thành công"]) --> StoreMemory["co_force_store_memory()<br/>Lưu quy trình thực hiện"]
+    Trigger(["Agent completes task<br/>successfully"]) --> StoreMemory["co_force_store_memory()<br/>Store execution steps"]
 
     StoreMemory --> Classified{"Type = SKILL?"}
-    Classified -->|Yes| CheckExisting["Tìm skill tương tự<br/>trong embedvec (cosine > 0.85)"]
+    Classified -->|Yes| CheckExisting["Find similar skill<br/>in database (cosine > 0.85)"]
     Classified -->|No| End1([Store as memory/knowledge])
 
-    CheckExisting --> HasSimilar{Có skill tương tự?}
-    HasSimilar -->|Yes| Merge["Merge vào skill hiện có<br/>Cập nhật steps nếu tốt hơn"]
-    HasSimilar -->|No| CreateNew["Tạo skill mới:<br/>1. Generate SKILL.md<br/>2. INSERT INTO skills<br/>3. Save to .co-force/skills/"]
+    CheckExisting --> HasSimilar{Similar skill exists?}
+    HasSimilar -->|Yes| Merge["Merge into existing skill<br/>Update steps if optimized"]
+    HasSimilar -->|No| CreateNew["Create new skill:<br/>1. Generate SKILL.md<br/>2. INSERT INTO skills<br/>3. Save to server store"]
 
     Merge --> UpdateSkill["co_force_update_skill()"]
-    CreateNew --> Return["Return: {<br/>  skillId, name,<br/>  message: 'New skill created!'<br/>}"]
+    CreateNew --> Return["Return: {<br/>  skillId, name,<br/>  message: 'New skill created!'<br>}"]
 ```
 
-**Auto-generated SKILL.md:**
-
+**Auto-Generated SKILL.md Structure:**
 ```markdown
 ---
 name: deploy-docker-container
@@ -1041,25 +948,21 @@ confidence: 0.88
 # Deploy Docker Container
 
 ## Prerequisites
-
 - Docker installed and running
 - Access to container registry
 - kubectl configured
 
 ## Steps
-
 1. Build Docker image: `docker build -t app:latest .`
 2. Tag for registry: `docker tag app:latest registry/app:latest`
 3. Push to registry: `docker push registry/app:latest`
 4. Apply to cluster: `kubectl apply -f deployment.yaml`
 
 ## Verification
-
 - Run `kubectl get pods` — verify pod status is Running
 - Check logs: `kubectl logs <pod-name>`
 
 ## Common Issues
-
 - Build fails: Check Dockerfile syntax and base image
 - Push denied: Verify registry credentials
 ```
@@ -1070,7 +973,7 @@ confidence: 0.88
 
 #### UC-21: Same Workspace on Multiple Machines
 
-**Scenario:** Workspace `my-project` được clone trên Developer Machine A và Developer Machine B. Cả hai máy đều kết nối tới cùng một **Co-Force Central Server**.
+**Scenario:** Workspace `my-project` is cloned on Developer Machine A and Developer Machine B. Both machines connect to the same **Co-Force Central Server**.
 
 ```mermaid
 graph TB
@@ -1089,17 +992,15 @@ graph TB
         DB["💾 SQLite (Shared Locks & Tasks)"]
     end
 
-    A1 -->|SSE / HTTP| MCP
-    A2 -->|SSE / HTTP| MCP
+    A1 -->|HTTP| MCP
+    A2 -->|HTTP| MCP
     MCP --> DB
 ```
 
-**Cơ chế:**
-
-1. **Nhận dạng Workspace:** Mỗi khi dự án được mở trên bất kỳ máy nào, file `.co-force/agent.json` cục bộ sẽ lưu cấu hình định danh workspace (ví dụ: `workspaceId` được tạo từ repository URL hoặc UUID ngẫu nhiên).
-2. **Trung tâm dữ liệu:** Toàn bộ trạng thái của workspace (bao gồm active agents, locks, tasks) đều được lưu tập trung trong SQLite DB của **Co-Force Central Server**.
-3. **Đồng bộ hóa Real-time:** Khi Agent 1 trên Machine A xin lock một file, Central Server ghi nhận trực tiếp. Nếu Agent 2 trên Machine B cố gắng truy cập file đó, Central Server phát hiện xung đột ngay lập tức mà không cần bất kỳ bước trung gian nào (như git commit/pull JSON file).
-4. **Không có conflict DB:** Không cần export/import file thủ công, tránh hoàn toàn rủi ro xung đột cơ sở dữ liệu hoặc trễ đồng bộ (stale locks).
+**Mechanism:**
+1. **Workspace Identification:** Project configuration `.co-force/agent.json` maps to the centralized `workspaceId` (derived from git remote URL).
+2. **Central Storage:** Task states, file locks, and team registry reside in SQLite DB files on the **Co-Force Central Server**.
+3. **Real-time Synchronization:** File lock claims write instantly to the central server. Conflicts are detected immediately across active clients without intermediate git syncs.
 
 ---
 
@@ -1123,7 +1024,7 @@ sequenceDiagram
     Note over A2: Agent 2 tries to edit src/A.ts
     A2->>MCP: co_force_lock_files(["src/A.ts"])
     MCP-->>A2: {<br/>  locked: [],<br/>  conflicts: [{file: "src/A.ts", lockedBy: "Agent 1"}]<br/>}
-    Note over A2: Agent 2 halts editing and coordinates with Agent 1
+    Note over A2: Agent 2 coordinates with Agent 1
 ```
 
 ---
@@ -1134,9 +1035,9 @@ sequenceDiagram
 
 ```mermaid
 graph LR
-    subgraph "Tauri Desktop App"
+    subgraph "Tauri Desktop App / Web"
         FE["NextJS Frontend"]
-        RS["Rust Tauri Backend"]
+        RS["Tauri Backend / Browser Client"]
     end
 
     subgraph "Co-Force MCP"
@@ -1144,24 +1045,23 @@ graph LR
         DB["SQLite DB"]
     end
 
-    FE -->|"Tauri IPC"| RS
-    RS -->|"WebSocket"| WS
-    WS -->|"Query"| DB
+    FE --> RS
+    RS --> WS
+    WS --> DB
 
-    DB -->|"Agent states"| WS
+    DB --> WS
     WS -->|"Real-time events:<br/>• agent_connected<br/>• task_updated<br/>• file_locked<br/>• memory_stored"| RS
-    RS -->|"Push updates"| FE
+    RS --> FE
 ```
 
 **Dashboard Views:**
 
-| View                    | Mô tả                                                                                                    |
-| :---------------------- | :------------------------------------------------------------------------------------------------------- |
-| **Agent Status Panel**  | Cards cho từng agent: avatar, name, provider, state (color-coded), current task, locked files, last seen |
-| **Task Board (Kanban)** | Columns: Draft → Pending → In Progress → Completed / Failed. Cards draggable.                            |
-| **Workspace Overview**  | Metrics: total tasks, completion rate, active agents, memory entries, skill count                        |
-| **Memory Explorer**     | Search + browse memory/knowledge/skills. Filter by type, date, agent.                                    |
-| **Timeline**            | Chronological log of all events: check-ins, task updates, locks, memory stores                           |
+| View                    | Description                                                                                               |
+| :---------------------- | :-------------------------------------------------------------------------------------------------------- |
+| **Agent Status Panel**  | Cards for active agents: name, provider, status (color-coded), current task, locked files, last seen      |
+| **Task Board (Kanban)** | Columns: Draft → Spec Review → Awaiting Approval → Approved → In Progress → Code Review → Completed/Rework |
+| **Workspace Overview**  | Metrics: total tasks, completion rate, active agents, memory count, skill count                           |
+| **Memory Explorer**     | Search + browse memory/knowledge/skills. Filter by type, date, agent.                                     |
 
 ---
 
@@ -1171,7 +1071,7 @@ graph LR
 
 ```mermaid
 flowchart TD
-    Crash(["Agent terminal closed or crashes mid-task"]) --> SSEDrop["SSE network connection drops"]
+    Crash(["Agent process dies mid-task"]) --> SSEDrop["HTTP connection terminates"]
     SSEDrop --> MarkDisconnected["Server marks Agent as 'disconnected'<br/>Tasks marked as 'paused'"]
 
     MarkDisconnected --> GracePeriod{"Reconnect within 2 minutes?"}
@@ -1179,11 +1079,11 @@ flowchart TD
     GracePeriod -->|Yes| RecheckIn["co_force_check_in()"]
     RecheckIn --> RestoreSession["Restore Agent state to 'working'<br/>Restore active locks & tasks"]
     
-    GracePeriod -->|No / Timeout| AutoCleanup["Auto-cleanup (Reclaim):<br/>1. Release all file locks in central DB<br/>2. Return tasks to backlog (assignedAgentId=null, status='approved')<br/>3. Reset local source files to Read-only (chmod -w)"]
+    GracePeriod -->|No / Timeout| AutoCleanup["Auto-cleanup (Reclaim):<br/>1. Release all file locks in central DB<br/>2. Return tasks to backlog (assignedAgentId=null, status='approved')"]
 
     AutoCleanup --> LateReconnect["Late Reconnect (> 2 min)"]
     LateReconnect --> ReRegister["co_force_check_in() re-registers new session"]
-    ReRegister --> Notification["Server responds:<br/>'Your previous locks were released.<br/>Tasks returned to backlog.<br/>Please pick up task and lock files again.'"]
+    ReRegister --> Notification["Server responds:<br/>'Your previous locks were released.<br/>Tasks returned to backlog.<br/>Please claim task and lock files again.'"]
 ```
 
 #### UC-28: Ollama Unavailable Fallback
@@ -1194,26 +1094,21 @@ flowchart TD
 
     CheckOllama -->|Yes| Normal["Normal flow: embed + classify"]
 
-    CheckOllama -->|No| Fallback["Fallback mode:<br/>1. Store content as plain text<br/>2. type = 'unclassified'<br/>3. Mark vector_id = NULL<br/>4. Queue for re-processing"]
-
-    Fallback --> ReturnWarning["Return: {<br/>  status: 'stored_without_embedding',<br/>  warning: 'Ollama offline. Will re-embed when available.'<br/>}"]
-
-    ReturnWarning --> BackgroundRetry["Background: retry embed<br/>every 5 min when Ollama is back"]
+    CheckOllama -->|No| Fail["Return SERVICE_UNAVAILABLE<br/>(No silent degradation)"]
 ```
 
 #### UC-32: LLM Model Selection
 
 **Tool:** `co_force_config({embeddingModel: "...", classifierModel: "..."})`
 
-Cho phép user/agent thay đổi model bất cứ lúc nào:
-
+Allows the user/agent to modify model runtime settings:
 ```json
 {
-  "embeddingModel": "mxbai-embed-large", // Default
-  "classifierModel": "gemma4:e2b", // Default
+  "embeddingModel": "mxbai-embed-large",
+  "classifierModel": "gemma4:e2b",
   "alternativeModels": {
-    "embedding": ["nomic-embed-text", "qwen3-embedding"],
-    "classifier": ["qwen3:4b", "llama3.3:8b", "gemma3:4b"]
+    "embedding": ["nomic-embed-text"],
+    "classifier": ["qwen3:14b", "llama3.3:8b"]
   }
 }
 ```
@@ -1224,82 +1119,57 @@ Cho phép user/agent thay đổi model bất cứ lúc nào:
 
 **Tool:** `co_force_guide()`
 
-Khi agent kết nối MCP, nó nhận được hướng dẫn đầy đủ:
+When an agent checks in, it can invoke `co_force_guide()` to receive the onboarding protocol:
 
 ```markdown
 # 🤖 Co-Force MCP — Agent Onboarding Guide
 
-Bạn đã kết nối với Co-Force MCP Server. Đây là bộ não chung giúp bạn phối hợp
-với các agent khác trong workspace này.
+You are connected to the Co-Force MCP Server. This serves as the shared coordination core of this workspace.
 
 ## ⚡ Mandatory First Step
+You MUST call `co_force_check_in` before any other tools. All other tools are blocked until check-in.
 
-LUÔN gọi `co_force_check_in` trước khi làm bất cứ điều gì.
+## 📋 Tool Execution Pipeline
 
-## 📋 Available Tools (theo thứ tự sử dụng)
+### Phase 1: Identity & Setup
+- `co_force_check_in`: Registers session, retrieves pending tasks, lists online teammates.
+- `co_force_whoami`: Returns active profile, locked files, and task context.
+- `co_force_guide`: Returns this manual.
 
-### Phase 1: Nhận diện
+### Phase 2: Design & Tasks
+- `co_force_recall`: Semantic search over workspace memory and design patterns.
+- `co_force_list_skills`: Lists established task skill patterns.
+- `co_force_create_tasks`: Drafts task structures (objectives, edge cases, verification plans).
+- `co_force_recheck_tasks`: Run reasoner spec validations to detect logic gaps.
 
-| Tool                | Khi nào dùng                                           |
-| :------------------ | :----------------------------------------------------- |
-| `co_force_check_in` | **BẮT BUỘC** — Gọi đầu tiên khi bắt đầu phiên làm việc |
-| `co_force_whoami`   | Kiểm tra nhanh: tôi là ai, đang làm gì                 |
-| `co_force_guide`    | Xem hướng dẫn này lại                                  |
+### Phase 3: Coding & Execution
+- `co_force_approve_tasks`: Commit approved tasks (user-driven proxy).
+- `co_force_lock_files`: Acquire exclusive logical locks BEFORE editing.
+- `co_force_update_task`: Maintain progress journal.
+- `co_force_submit_verification`: Submit verification evidence (test outputs, commit_sha).
 
-### Phase 2: Phân tích & Lên kế hoạch
+### Phase 4: Closure & Synthesis
+- `co_force_unlock_files`: Release logical locks.
+- `co_force_store_memory`: Synthesize lessons, gotchas, and patterns.
 
-| Tool                     | Khi nào dùng                              |
-| :----------------------- | :---------------------------------------- |
-| `co_force_recall`        | Tìm memory/knowledge liên quan đến prompt |
-| `co_force_list_skills`   | Xem có skill nào hỗ trợ không             |
-| `co_force_create_tasks`  | Draft danh sách task từ phân tích         |
-| `co_force_recheck_tasks` | Validate tasks: lỗ hổng? thiếu use case?  |
-
-### Phase 3: Confirm & Triển khai
-
-| Tool                       | Khi nào dùng                      |
-| :------------------------- | :-------------------------------- |
-| `co_force_approve_tasks`   | Sau khi user confirm              |
-| `co_force_lock_files`      | TRƯỚC khi sửa bất kỳ file nào     |
-| `co_force_update_task`     | Liên tục cập nhật tiến độ         |
-| `co_force_check_conflicts` | Trước khi lock, kiểm tra conflict |
-| `co_force_delegate_task`   | Giao task cho agent khác          |
-
-### Phase 4: Hoàn thành
-
-| Tool                    | Khi nào dùng                        |
-| :---------------------- | :---------------------------------- |
-| `co_force_unlock_files` | Sau khi hoàn thành, giải phóng lock |
-| `co_force_store_memory` | Lưu kinh nghiệm, lessons learned    |
-
-### Utility Tools
-
-| Tool                        | Khi nào dùng               |
-| :-------------------------- | :------------------------- |
-| `co_force_list_agents`      | Xem ai đang online, làm gì |
-| `co_force_workspace_status` | Tổng quan workspace        |
-| `co_force_list_tasks`       | Danh sách tất cả tasks     |
-| `co_force_get_skill`        | Chi tiết một skill         |
-
-## ⚠️ Rules
-
-1. **KHÔNG triển khai task khi chưa có user approval**
-2. **LUÔN lock files trước khi sửa**
-3. **LUÔN update task status trong quá trình làm việc**
-4. **KHÔNG sửa file đang bị agent khác lock**
-5. **Lưu memory sau mỗi task hoàn thành**
+## ⚠️ Enforced Rules
+1. Never edit a file without locking it first.
+2. Never review or approve your own tasks (enforced by the server).
+3. Do not attempt direct status=completed transitions; verify first.
+4. Process incoming inbox review requests prior to claiming new tasks.
 ```
 
 ---
 
-### Group H: Cross-Agent Context Sharing (Inspired by Tutti Architecture)
+### Group H: Cross-Agent Context Sharing
 
-> **Nguồn gốc:** Các Use Cases trong Group H được thiết kế dựa trên nghiên cứu kiến trúc [Tutti](ref/tutti/) — một local-first desktop workspace cho phép nhiều AI agents cùng làm việc. Tutti sử dụng cơ chế "Activity Projection" và "@ Mention Routing" để agents nhìn thấy context của nhau. Co-Force áp dụng các patterns tương tự nhưng qua MCP protocol thụ động.
+> [!NOTE]
+> **Source:** The context-sharing use cases are inspired by the architecture of [Tutti](ref/tutti/) — a local-first desktop workspace allowing coordinated multi-agent execution via activity projection and context routing. Co-Force implements these patterns in-band via MCP envelopes.
 
 #### UC-33: Agent Context Retrieval
 
-**Actor:** AI Agent muốn xem context/history của agent khác  
-**Preconditions:** Cả hai agents đã check-in cùng workspace  
+**Actor:** AI Agent seeking context on a teammate's activities.  
+**Preconditions:** Both agents checked into the workspace.
 
 **Tool:** `co_force_get_agent_context(agentId?, includeHistory?)`
 
@@ -1310,31 +1180,24 @@ sequenceDiagram
     participant DB as 🗄️ SQLite
     participant A2 as 🤖 Agent 2 (Backend)
 
-    Note over A1: Cần biết Agent 2 đã làm gì<br/>với API endpoints
+    Note over A1: Needs to check Agent 2's<br/>API progress
 
     A1->>MCP: co_force_get_agent_context({<br/>  agentId: "agent-2-id",<br/>  includeHistory: true<br/>})
 
     MCP->>DB: SELECT from agents WHERE agent_id = ?
-    MCP->>DB: SELECT from agent_activities<br/>WHERE agent_id = ? ORDER BY occurred_at DESC
-    MCP->>DB: SELECT from shared_contexts<br/>WHERE source_agent_id = ?
-    MCP->>DB: SELECT from memory_entries<br/>WHERE source_agent_id = ?
+    MCP->>DB: SELECT from agent_activities WHERE agent_id = ?
+    MCP->>DB: SELECT from shared_contexts WHERE source_agent_id = ?
+    MCP->>DB: SELECT from memory_entries WHERE agent_id = ?
 
-    MCP-->>A1: {<br/>  agent: {name: "Agent-Beta", provider: "claude-code"},<br/>  currentTask: {title: "Setup REST API", progress: "4/6"},<br/>  recentActivity: [<br/>    {type: "file_edited", file: "src/api/routes.ts", at: "2min ago"},<br/>    {type: "task_completed", task: "DB Schema", at: "15min ago"}<br/>  ],<br/>  sharedMemories: [<br/>    "API uses Express.js + TypeORM",<br/>    "Auth endpoints: /api/auth/login, /api/auth/refresh"<br/>  ],<br/>  contextSummary: "Đang build REST API với Express..."<br/>}
-
-    Note over A1: Agent 1 bây giờ biết chính xác<br/>API endpoints để build frontend client
+    MCP-->>A1: {<br/>  agent: {name: "Agent-Beta", provider: "claude-code"},<br/>  currentTask: {title: "Setup REST API", progress: "4/6"},<br/>  recentActivity: [<br/>    {type: "file_edited", file: "src/api/routes.ts", at: "2min ago"},<br/>    {type: "task_completed", task: "DB Schema", at: "15min ago"}<br/>  ],<br/>  sharedMemories: [<br/>    "API uses Express.js",<br/>    "Endpoints: /api/auth/login"<br/>  ],<br/>  contextSummary: "Building Express API..."<br/>}
 ```
-
-**Lưu ý thiết kế (từ Tutti):**
-- Tương đương Tutti's `tutti agent session-summary --session-id <id> --json`
-- `contextSummary` được generate bằng LLM từ recent activities (nếu Ollama available), hoặc concatenate từ raw activities (fallback)
-- Nếu `agentId` = null → trả về context của agent hiện tại (tương đương `co_force_whoami` enhanced)
 
 ---
 
 #### UC-34: Workspace Activity Stream
 
-**Actor:** AI Agent muốn xem lịch sử hoạt động gần đây trong workspace  
-**Preconditions:** Agent đã check-in  
+**Actor:** AI Agent checking recent workspace changes.  
+**Preconditions:** Agent checked in.
 
 **Tool:** `co_force_get_workspace_activity(limit?, types?)`
 
@@ -1346,22 +1209,16 @@ sequenceDiagram
 
     Agent->>MCP: co_force_get_workspace_activity({<br/>  limit: 20,<br/>  types: ["task_completed", "file_edited", "delegation"]<br/>})
 
-    MCP->>DB: SELECT from agent_activities<br/>WHERE workspace_id = ?<br/>AND activity_type IN (?)<br/>ORDER BY occurred_at DESC LIMIT 20
-
-    MCP-->>Agent: {<br/>  activities: [<br/>    {type: "task_completed", agent: "Agent-Beta",<br/>     content: "Setup DB Schema", at: "15min ago"},<br/>    {type: "delegation", agent: "Agent-Alpha",<br/>     content: "Delegated 'SSO OAuth2' to pending", at: "20min ago"},<br/>    {type: "file_edited", agent: "Agent-Beta",<br/>     files: ["src/db/schema.ts"], at: "25min ago"}<br/>  ],<br/>  summary: "2 agents active, 3 tasks completed today"<br/>}
+    MCP->>DB: SELECT from agent_activities WHERE workspace_id = ?<br/>AND activity_type IN (?) ORDER BY occurred_at DESC LIMIT 20
+    MCP-->>Agent: activity list + workspace summary
 ```
-
-**Cơ chế ghi activity (tự động):**
-- Mỗi tool call của Co-Force (check_in, lock, unlock, update_task, store_memory) tự động tạo record trong `agent_activities`
-- Activity log là **append-only** — không xóa, chỉ thêm
-- Tương đương Tutti's Activity Projection pipeline: `Runtime Event → Reporter → Activity Store → SSE`
 
 ---
 
 #### UC-35: Cross-Agent Context Sharing
 
-**Actor:** AI Agent muốn chủ động chia sẻ context cho agent khác  
-**Preconditions:** Agent đã check-in  
+**Actor:** AI Agent sharing context with another agent.  
+**Preconditions:** Agent checked in.
 
 **Tool:** `co_force_share_context(content, targetAgentId?, type)`
 
@@ -1372,142 +1229,70 @@ sequenceDiagram
     participant DB as 🗄️ SQLite
     participant A2 as 🤖 Agent 2 (Frontend)
 
-    Note over A1: Vừa hoàn thành API,<br/>muốn share spec cho Frontend agent
+    Note over A1: Shared API spec with Frontend agent
 
-    A1->>MCP: co_force_share_context({<br/>  content: {<br/>    summary: "API endpoints ready",<br/>    endpoints: [<br/>      "POST /api/auth/login",<br/>      "GET /api/users/:id",<br/>      "PUT /api/users/:id"<br/>    ],<br/>    schema: "See src/api/types.ts"<br/>  },<br/>  targetAgentId: "agent-2-id",<br/>  type: "knowledge_share"<br/>})
+    A1->>MCP: co_force_share_context({<br/>  content: { endpoints: ["POST /api/auth/login"] },<br/>  targetAgentId: "agent-2-id",<br/>  type: "knowledge_share"<br/>})
 
     MCP->>DB: INSERT INTO shared_contexts(...)
-    MCP->>DB: INSERT INTO agent_activities(...)<br/>type = 'context_shared'
     MCP-->>A1: {contextId: "ctx-123", delivered: false}
 
-    Note over A2: Agent 2 check-in hoặc<br/>gọi get_agent_context
+    Note over A2: Agent 2 checks in later
 
     A2->>MCP: co_force_check_in(workspacePath)
-    MCP->>DB: SELECT from shared_contexts<br/>WHERE target_agent_id = ? AND resolved = FALSE
-
-    MCP-->>A2: {<br/>  pendingContexts: [{<br/>    from: "Agent-Alpha (Backend)",<br/>    type: "knowledge_share",<br/>    summary: "API endpoints ready",<br/>    contextId: "ctx-123"<br/>  }],<br/>  protocol_next_step: "Review shared contexts..."<br/>}
-
-    MCP->>DB: UPDATE shared_contexts<br/>SET resolved = TRUE WHERE context_id = 'ctx-123'
+    MCP->>DB: SELECT from shared_contexts WHERE target_agent_id = ? AND resolved = FALSE
+    MCP-->>A2: { pendingContexts: [ctx-123], protocol_next_step: "Review context" }
+    MCP->>DB: UPDATE shared_contexts SET resolved = TRUE WHERE context_id = 'ctx-123'
 ```
-
-**Lưu ý thiết kế (từ Tutti):**
-- Tương đương Tutti's `@ mention` routing: agent A reference context → agent B resolve khi cần (lazy resolution)
-- Nếu `targetAgentId` = null → broadcast cho tất cả agents trong workspace
-- Shared contexts được deliver khi target agent gọi `check_in` hoặc `get_agent_context`
-- Context tự động expire sau 24h nếu không resolved
 
 ---
 
 #### UC-36: Dynamic AGENTS.md Generation
 
-**Actor:** Co-Force Server (tự động)  
-**Trigger:** Bất kỳ state change nào (check_in, lock, task_update, context_share)  
+**Actor:** Co-Force Server (automatic)  
+**Trigger:** State changes (check_in, locks, task_updates).
 
 ```mermaid
 flowchart TD
     Trigger([State Change Event]) --> EventBus["tokio::broadcast Event Bus"]
-    
     EventBus --> Generator["AGENTS.md Generator"]
     Generator --> QueryState["Query current workspace state"]
-    QueryState --> DB["SQLite: agents, tasks,<br/>locks, recent_activities"]
-    
+    QueryState --> DB["SQLite DB Query"]
     DB --> BuildMD["Build managed block content"]
-    BuildMD --> WriteFile["Write to .co-force/AGENTS.md<br/>(managed block pattern)"]
-    
-    WriteFile --> Also["Also write:<br/>• .agents/AGENTS.md (Antigravity)<br/>• .cursorrules (Cursor)<br/>• .clauderules (Claude Code)"]
-    
-    Also --> AgentReads["Next agent session<br/>reads updated file automatically"]
+    BuildMD --> WriteFile["Write AGENTS.md<br/>(L3 worker worktrees FS only)"]
+    WriteFile --> Dashboard["Render dynamic rules for Dashboard API"]
 ```
 
-**Managed Block Pattern** (mượn từ Tutti's `WriteManagedBlock`):
-
-```markdown
-# .co-force/AGENTS.md (auto-generated)
-
-<!-- BEGIN CO-FORCE MANAGED BLOCK (auto-generated, do not edit manually) -->
-# Co-Force Workspace Protocol
-
-## Current Workspace State
-- **Workspace:** my-project
-- **Active Agents:** 2
-- **Updated:** 2026-07-07 10:15:00
-
-## Active Agents
-| Agent | Provider | State | Current Task | Locked Files |
-|-------|----------|-------|--------------|-------------|
-| Agent-Alpha | Antigravity | working | Implement Login (3/5) | src/auth/login.ts |
-| Agent-Beta | Claude Code | idle | — | — |
-
-## Pending Tasks
-- [ ] "Implement SSO OAuth2" — delegated from Agent-Alpha, needs pickup
-- [x] "Setup DB Schema" — completed by Agent-Beta (15 min ago)
-
-## Recent Knowledge
-- "JWT auth: use rotating refresh tokens" (Agent-Alpha, 0.92 confidence)
-- "PostgreSQL, not MySQL" (Agent-Beta, 0.95 confidence)
-
-## File Lock Status
-| File | Locked By | Since | Task |
-|------|-----------|-------|------|
-| src/auth/login.ts | Agent-Alpha | 5 min ago | Implement Login |
-
-## Protocol Rules
-1. ALWAYS call co_force_check_in() first
-2. ALWAYS lock files before editing (co_force_lock_files)
-3. Check co_force_list_agents() before starting new work
-4. Store memory after completing tasks (co_force_store_memory)
-<!-- END CO-FORCE MANAGED BLOCK -->
-```
-
-**Cơ chế hoạt động:**
-1. **Event-driven update:** Mỗi khi có state change → Event Bus → Generator re-renders file
-2. **Provider-aware output:** Generator tạo file cho nhiều providers:
-   - `.co-force/AGENTS.md` — universal (readable by all agents)
-   - `.agents/AGENTS.md` — cho Antigravity CLI (auto-discovered)
-   - `.cursorrules` — cho Cursor (append to existing)
-   - `.clauderules` — cho Claude Code (append to existing)
-3. **Managed block preservation:** Chỉ update content giữa `BEGIN` và `END` markers — không overwrite user content
-4. **Debounced writes:** Batch state changes, write at most once per 5 seconds
+Dynamic rules are rendered dynamically to L3 worker files and served to the dashboard API. Static rules are enrolled on the client machine once.
 
 ---
 
-### Group I: Active A2A Orchestration (Quản lý Vòng đời Agent)
+### Group I: Active A2A Orchestration
 
-> **Nguồn gốc:** Để mang lại trải nghiệm liền mạch (user-friendly) và đảm bảo tính toàn vẹn công việc khi gặp sự cố, Co-Force được nâng cấp thêm khả năng **Process Manager** nhằm đẻ nhánh và chuyển giao công việc giữa các agents, thay vì yêu cầu user phải thao tác tay.
+#### UC-37: Sub-Agent Spawning
 
-#### UC-37: Sub-Agent Spawning (Đẻ nhánh A2A)
-
-**Actor:** AI Agent (ví dụ: Cursor) muốn chạy một agent khác ở chế độ nền  
-**Preconditions:** Co-Force MCP có quyền execute process trên OS  
+**Actor:** AI Agent (e.g. L1 developer) spawning a sub-agent.  
+**Preconditions:** Co-Force MCP has access permission.
 
 **Tool:** `co_force_spawn_agent(provider, task_id, context)`
 
 ```mermaid
 sequenceDiagram
-    participant Cursor as 🤖 Cursor (Frontend)
+    participant Dev as 🤖 Dev Agent (client, L1)
     participant MCP as ⚙️ Co-Force MCP
-    participant ProcMgr as 🖥️ Process Manager
-    participant Claude as 🤖 Claude Code (Backend)
+    participant W as 🤖 Worker Agent (server, L3)
 
-    Note over Cursor: Nhận task Fullstack.<br/>Muốn ủy quyền phần Backend.
-
-    Cursor->>MCP: co_force_spawn_agent({<br/>  provider: "claude-code",<br/>  task_id: "task-backend",<br/>  context: "Build REST API theo spec này..."<br/>})
-
-    MCP->>ProcMgr: system_spawn("claude -p 'context...'")
-    ProcMgr-->>MCP: PID 45982
-    MCP-->>Cursor: { sub_agent_id: "agent-claude-bg", status: "running" }
-
-    Note over Claude: Claude khởi động ngầm,<br/>tự động đọc .co-force/AGENTS.md
-
-    Claude->>MCP: co_force_check_in()
-    Claude->>MCP: co_force_lock_files(...)
-    Claude->>MCP: co_force_update_task(...)
+    Dev->>MCP: co_force_spawn_agent({provider: "claude-code", task_id: "t-backend"})
+    Note over MCP: Spawns L3 worker process in separate git worktree
+    MCP-->>Dev: sub_agent status: running
+    W->>MCP: co_force_check_in()
 ```
 
-#### UC-38: Task Handover / Fallback (Chuyển giao khi lỗi)
+---
 
-**Actor:** AI Agent đang chạy nhưng gặp giới hạn (token limit, timeout)  
-**Preconditions:** Agent gọi tool trước khi crash/thoát hoàn toàn  
+#### UC-38: Task Handover / Fallback
+
+**Actor:** AI Agent hitting resource limit or rate limit constraints.  
+**Preconditions:** Invoked before exit.
 
 **Tool:** `co_force_handover(reason, current_task_id, state_summary, next_provider)`
 
@@ -1517,225 +1302,92 @@ sequenceDiagram
     participant MCP as ⚙️ Co-Force MCP
     participant CC as 🤖 Claude Code (Next)
 
-    Note over AG: Xử lý file lớn, token context<br/>sắp chạm ngưỡng 128K.
+    Note over AG: Hitting context limits
 
-    AG->>MCP: co_force_handover({<br/>  reason: "token_limit_approaching",<br/>  current_task_id: "task-123",<br/>  state_summary: "Đã parse xong file A, chuẩn bị ghi file B",<br/>  next_provider: "claude-code"<br/>})
+    AG->>MCP: co_force_handover({<br/>  reason: "context_exhausted",<br/>  current_task_id: "task-123",<br/>  state_summary: "Parsed file A, coding file B...",<br/>  next_provider: "claude-code"<br/>})
 
-    MCP->>MCP: Đổi task status = "pending_handover"<br/>Lưu state_summary vào task context
-    MCP->>MCP: Tự động Unlock toàn bộ files<br/>đang bị AG lock
+    MCP->>MCP: Set task to pending_handover,<br/>escrow locks to task
+    MCP->>MCP: Trigger spawn / assign to successor
+    MCP-->>AG: { status: "handed_over", safe_to_exit: true }
     
-    MCP->>MCP: Process Manager spawn Claude Code
-    MCP-->>AG: { status: "handed_over_successfully", safe_to_exit: true }
-    
-    Note over AG: Antigravity kết thúc an toàn.
-    
-    Note over CC: Claude khởi động, check-in, nhận task-123<br/>kèm state_summary và làm tiếp.
+    Note over CC: Successor starts, check-in, receives package
 ```
 
 ---
 
-## 9. Agent Activation & Adoption Mechanism (Cơ chế Thúc đẩy Agent gọi Tools)
+## 9. Agent Activation & Adoption Mechanism
 
-### 9.1 Thách thức "Con gà & Quả trứng" trong MCP thụ động (Passive MCP)
-Do Co-Force MCP Server hoạt động hoàn toàn ở chế độ thụ động (Passive) — nghĩa là Server chỉ chạy khi Client (AI Agent) kết nối và gọi Tools — nên không có cơ chế trực tiếp để Server bắt đầu phiên làm việc hoặc ra lệnh cho Agent. Nếu không có các giải pháp thúc đẩy chủ động từ phía môi trường và cấu hình, Agent sẽ bỏ qua các tools của Co-Force và trực tiếp sửa đổi các file trong dự án, dẫn tới việc bypass hoàn toàn cơ chế kiểm soát Task, Locking và RAG.
+### 9.1 The "Chicken and Egg" Dilemma in Passive MCP
+Since MCP is a passive protocol driven entirely by client tool calls, the server cannot independently invoke client actions. If developer agents ignore Co-Force tools and modify files directly, they bypass tasks, locks, and quality gates.
 
-Để giải quyết triệt để vấn đề này, Co-Force áp dụng mô hình **Cơ chế Phòng vệ & Dẫn dắt 4 Lớp (4-Layer Guardrails & Inducement)** dưới đây.
+To solve this, Co-Force enforces **4-Layer Guardrails**:
 
 ```mermaid
 graph TD
     UserPrompt["👤 User Input / Task Prompt"] --> Agent["🤖 AI Agent (Cursor/Claude...)"]
     
-    subgraph "Lớp 1: Rule Injection (Môi trường)"
-        Rules[".cursorrules / AGENTS.md / .clauderules<br/>→ Yêu cầu check-in đầu tiên"]
+    subgraph "Layer 1: Rule Injection"
+        Rules[".cursorrules / AGENTS.md / .clauderules<br/>→ Require check-in first"]
     end
-    Rules -.->|Auto-loaded System Instructions| Agent
+    Rules -.->|System Instructions| Agent
     
-    subgraph "Lớp 2: Cognitive Inducement (Nhận thức)"
+    subgraph "Layer 2: Cognitive Inducement"
         Desc["Tool Descriptions<br/>→ MANDATORY: Check-in first!"]
     end
-    Desc -.->|Đọc danh sách tools| Agent
+    Desc -.->|Inspect tools| Agent
     
-    Agent -->|1. Muốn sửa file trực tiếp?| LockCheck{"Có gọi lock_files không?"}
-    LockCheck -->|Không| RulesWarning["Quy trình System Instructions bắt buộc dùng Lock"]
-    LockCheck -->|Có| CheckInVerify{"Đã check-in chưa?"}
+    Agent -->|1. Edit file directly?| LockCheck{"Did it lock_files?"}
+    LockCheck -->|No| RulesWarning["System instructions demand lock"]
+    LockCheck -->|Yes| CheckInVerify{"Is checked in?"}
     
-    subgraph "Lớp 3: Interlocking Failures (Chặn chéo)"
-        CheckInVerify -->|Chưa| BlockErr["Tool trả về lỗi:<br/>CHECK_IN_REQUIRED"]
-        BlockErr -->|Ép Agent sửa sai| CallCheckIn["🔧 Gọi co_force_check_in()"]
+    subgraph "Layer 3: Interlocking Failures"
+        CheckInVerify -->|No| BlockErr["Tool returns error:<br/>CHECK_IN_REQUIRED"]
+        BlockErr -->|Enforce correction| CallCheckIn["🔧 Call co_force_check_in()"]
     end
     
-    CheckInVerify -->|Rồi| Exec["Thực thi thành công"]
+    CheckInVerify -->|Yes| Exec["Execute successfully"]
     CallCheckIn --> Exec
     
-    subgraph "Lớp 4: Local Guard (File cục bộ)"
-        SessionJSON[".co-force/session_status.json<br/>→ Danh sách locks hoạt động"]
+    subgraph "Layer 4: Local Guard (Opt-in strict mode)"
+        SessionJSON[".co-force/session_status.json<br/>→ Active locks list"]
     end
-    Agent -.->|Đọc thông tin cục bộ| SessionJSON
+    Agent -.->|Read local state| SessionJSON
 ```
 
-### 9.2 Chi tiết 4 Lớp Phòng vệ & Dẫn dắt
+### 9.2 Details of the 4 Guardrail Layers
 
-#### 1. Lớp 1: Workspace Rule Auto-Generation (Tự động tiêm luật vào Workspace)
-Khi Co-Force kết nối với một workspace (hoặc khi workspace được khởi tạo), Server sẽ tự động phát hiện môi trường/IDE đang chạy và tự động tạo hoặc bổ sung nội dung cấu hình luật cho Agent:
-- **Cursor:** Auto-generated/updated `.cursorrules` trong workspace root.
-- **Windsurf:** Auto-generated/updated `.windsurfrules` trong workspace root.
-- **Claude Project CLI / Projects:** Auto-generated `.claudeproj/custom_instructions.md` hoặc `.clauderules`.
-- **Gemini / Antigravity / Co-Force Config:** Auto-generated `.agents/AGENTS.md` hoặc `.gemini/config/AGENTS.md`.
-- **GitHub Copilot:** Auto-generated `.github/copilot-instructions.md`.
+#### 1. Layer 1: Workspace Rule Auto-Generation
+Upon setup, the enrollment script injects static workspace rule configurations:
+- **Cursor:** `.cursorrules` in workspace root.
+- **Claude Project CLI:** `.clauderules`.
+- **Windsurf:** `.windsurfrules`.
+- **Universal:** `AGENTS.md` at project root.
 
-**Mẫu luật tiêm vào (Template System Instructions):**
-```markdown
-# Co-Force Workspace Protocol Rules
-You are working in a cooperative workspace managed by the Co-Force MCP Server.
-To prevent file conflicts, manage tasks, and synchronize memory/knowledge:
-1. BEFORE performing any files read, write, or analysis, you MUST call the `co_force_check_in(workspacePath)` tool.
-2. If `co_force_check_in` returns that onboarding is required, you must run `co_force_guide()` and follow it.
-3. BEFORE editing any file, you MUST check conflicts using `co_force_check_conflicts` and acquire a lock using `co_force_lock_files`.
-4. AFTER finishing a task, you MUST unlock files via `co_force_unlock_files` and store memory via `co_force_store_memory`.
-5. Check `.co-force/session_status.json` at the start of any prompt to see if other agents have active locks.
-Failing to follow these instructions will cause code conflicts, build breakages, and data loss.
-```
+#### 2. Layer 2: LLM Cognitive Inducement
+Tool descriptions in the schema returned to client runtimes use command-driven vocabulary:
+- **`co_force_check_in`**: `"MANDATORY: MUST be called on the very first turn of any workspace session. Registers session, active role, and retrieves pending tasks. All other tools return CHECK_IN_REQUIRED until check-in is complete."`
+- **`co_force_lock_files`**: `"MANDATORY: MUST be called before modifying any files. Requests exclusive workspace write locks. Editing files without locking violates protocol and is rejected."`
 
-#### 2. Lớp 2: LLM Cognitive Inducement (Thao túng nhận thức qua Tool Descriptions)
-AI Agent quyết định gọi tool nào dựa vào mô tả (description) của tool trong schema gửi qua MCP. Co-Force sẽ cấu hình các mô tả tool mang tính chất mệnh lệnh cao và cảnh báo hậu quả để định hướng LLM:
-- **`co_force_check_in`**:
-  *Mô tả:* `"MANDATORY: BẮT BUỘC phải gọi tool này ngay khi nhận được prompt đầu tiên trong workspace. Thực hiện đăng ký Agent ID, vai trò (role), và đồng bộ hóa danh sách task đang chờ xử lý. Không gọi tool này sẽ khiến mọi thao tác ghi file bị chặn và gây conflict code nghiêm trọng."`
-- **`co_force_lock_files`**:
-  *Mô tả:* `"MANDATORY: BẮT BUỘC phải gọi tool này trước khi sửa đổi bất kỳ file nào trong workspace. Lấy quyền ghi độc quyền. Không bao giờ được sửa file mà không có lock từ Co-Force."`
-- **`co_force_unlock_files`**:
-  *Mô tả:* `"MANDATORY: BẮT BUỘC gọi tool này sau khi đã chỉnh sửa xong file và kiểm tra build thành công để giải phóng khóa ghi, giúp các agent khác tiếp tục công việc."`
+#### 3. Layer 3: Interlocking Failures
+All business use case tools verify connection session status. Requests without a checked-in session return the `CHECK_IN_REQUIRED` error with a structured `recovery_action` pointing to `co_force_check_in(...)`, driving an immediate self-correction loop in LLMs.
 
-#### 3. Lớp 3: Interlocking Failures (Khóa liên động - Chặn gọi chéo)
-Để tránh trường hợp Agent bỏ qua check-in nhưng vẫn gọi các tool khác của Co-Force, tất cả các tool nghiệp vụ (như `co_force_lock_files`, `co_force_recall`, `co_force_create_tasks`, `co_force_update_task`) đều thực hiện kiểm tra kiểm soát trạng thái (state verification):
-- SQLite DB sẽ lưu vết session đang hoạt động của Agent dựa trên `agentId` và `workspaceId`.
-- Nếu Agent gọi bất kỳ tool nào mà session chưa được check-in, server sẽ từ chối xử lý và trả về lỗi có cấu trúc chuẩn chỉ dẫn Agent cách sửa sai:
-  ```json
-  {
-    "status": "error",
-    "error_code": "CHECK_IN_REQUIRED",
-    "message": "Protocol Violation: You must call `co_force_check_in(workspacePath)` first to register your agent session. Your request to write/read could not be processed due to missing identity."
-  }
-  ```
-- Nhận được phản hồi này, LLM Agent sẽ tự động hiểu ra lỗi quy trình và tự gọi lại `co_force_check_in`.
-
-#### 4. Lớp 4: Local Guard & Session Files (Hàng rào bảo vệ mức Hệ điều hành)
-Co-Force duy trì thư mục cục bộ `.co-force/` trong workspace (đã được tự động thêm vào `.gitignore` trong quá trình init).
-- Một file `.co-force/session_status.json` sẽ liên tục được cập nhật trạng thái các locks và tasks đang chạy của toàn bộ workspace.
-- Khi Agent bắt đầu thực hiện task (như đọc cấu trúc thư mục bằng `list_dir` hoặc tìm kiếm bằng `grep_search`), nó sẽ nhìn thấy sự hiện diện của thư mục `.co-force/` và file trạng thái này. Theo chỉ dẫn ở **Lớp 1**, nó sẽ tự động đọc file này để biết trạng thái lock hiện tại, từ đó kích hoạt nhận thức về việc cần phối hợp.
-- **OS-Level File Write Protection (Chặn cứng ghi file ở mức OS):** Để tránh việc Agent cố tình bypass hoàn toàn MCP và ghi file trực tiếp thông qua các lệnh shell (như `echo "code" > file.rs`) hoặc built-in fs tools của IDE, Co-Force Central Server sẽ phối hợp với một daemon nhỏ trên máy trạm của nhà phát triển (được tích hợp trong Tauri App) hoặc sử dụng file permissions của hệ điều hành:
-  - Khi bắt đầu phiên, toàn bộ các file mã nguồn của workspace được đặt ở chế độ **Read-only** (`chmod -w`).
-  - Khi Agent gọi thành công `co_force_lock_files(["src/auth.rs"])`, server/daemon sẽ thay đổi thuộc tính file thành **Writeable** (`chmod +w`) cho phép ghi.
-  - Khi Agent hoàn thành và gọi `co_force_unlock_files(["src/auth.rs"])`, file sẽ lập tức được trả về trạng thái **Read-only** (`chmod -w`).
-  - Điều này tạo ra một "hàng rào vật lý" ép buộc LLM không thể viết code trực tiếp mà bắt buộc phải chạy qua chuỗi tool của Co-Force, nếu không sẽ nhận lỗi hệ điều hành `Permission Denied` và buộc phải gọi tool lock để sửa sai.
+#### 4. Layer 4: Local Guard & Session Files
+- `.co-force/session_status.json` caches active lock status (used for LAN configurations).
+- **Strict Mode Write Protection (Optional Opt-in):** In strict configuration mode, workspace source files are kept read-only (`chmod -w`). Successful `lock_files` calls toggle the target files to writeable (`chmod +w`), restoring them to read-only upon `unlock_files`. File writing without lock requests throws OS permission errors, enforcing compliance.
 
 ---
 
-### 9.3 Chiến lược Instruction để Agent tuân thủ 100% chính xác
+### 9.3 Instruction Strategy for Compliance
 
-> **⚠️ Đã thay thế bởi Plan 09 (Agent Operating Protocol):** template bên dưới là bản gốc, có 2 chỉ dẫn nay đã SAI: (1) dọa "OS Permission Denied / chmod ban" — Lớp 4 đã đổi hình thái sang in-band state (architecture §5.6), rules không được hứa điều server không enforce; (2) flow thiếu quality gates — `update_task(completed)` nay trả `GATE_VIOLATION`, đường duy nhất là `submit_verification` → cross review (Plan 07). Template chốt + chuẩn tool descriptions + guide động + ma trận enforce: **`docs/plans/09_agent_operating_protocol.md`**.
-
-Để đảm bảo LLM Agent (một mô hình xác suất) tuân thủ quy trình kiểm soát này một cách tuyệt đối, Co-Force sử dụng ba kỹ thuật định hướng tư duy (Cognitive Guardrails):
-
-#### 1. Mẫu System Instruction dạng Máy Trạng Thái Ràng Buộc (State-bound Instruction)
-Thay vì chỉ mô tả luật chung chung, nội dung tiêm vào `.cursorrules` hay `.agents/AGENTS.md` (Lớp 1) định nghĩa Agent dưới dạng một **Máy Trạng Thái Ràng Buộc** (Strict State Machine):
-
-```markdown
-# Co-Force Protocol Enforcement
-You are a state-bound agent operating within a strictly coordinated multi-agent workspace. You are FORBIDDEN from acting freely. Every action you take must transition through the following states in order:
-
-[INIT] ──> Must call co_force_check_in() ──> [READY]
-[READY] ──> Must call co_force_recall() to align context ──> [PLANNING]
-[PLANNING] ──> Must call co_force_create_tasks() & recheck ──> [AWAIT_APPROVAL]
-[AWAIT_APPROVAL] ──> Wait for User confirmation ──> [APPROVED]
-[APPROVED] ──> Must call co_force_lock_files() before editing ──> [EXECUTING]
-[EXECUTING] ──> Perform edits + co_force_update_task() ──> [VERIFYING]
-[VERIFYING] ──> Run tests ──> [COMPLETING]
-[COMPLETING] ──> Must call co_force_unlock_files() & store_memory() ──> [INIT]
-
-CRITICAL RULES:
-- If you edit a file without transition to EXECUTING state (which requires calling co_force_lock_files), the OS will return "Permission Denied".
-- Do not attempt to use `chmod` to bypass this; doing so will result in an immediate build ban.
-```
-
-#### 2. Phản hồi Tool mang tính định hướng hành động (Actionable Tool Outputs)
-Mọi phản hồi từ tool của Co-Force đều trả về thêm một trường siêu dữ liệu (metadata) chỉ thị hành động bắt buộc tiếp theo (`protocol_next_step`).
-Ví dụ, khi `co_force_check_in` trả về thành công:
-```json
-{
-  "status": "success",
-  "agentId": "uuid-1234",
-  "protocol_next_step": "You must now call co_force_list_tasks() to fetch tasks, or co_force_create_tasks() if you are creating new ones. Do not read/write workspace files yet."
-}
-```
-LLM khi đọc context của lượt hội thoại trước sẽ bắt buộc phải tuân theo hướng dẫn `protocol_next_step` vừa được nạp vào bộ nhớ ngữ cảnh của nó.
-
-#### 3. Chặn chéo lỗi luồng nghiệp vụ (Interlocking Self-Correction Loop)
-Khi Agent gọi sai luồng (ví dụ: gọi `co_force_create_tasks` trước khi `co_force_check_in`), Server sẽ trả về lỗi định dạng chuẩn JSON-RPC có chứa hướng dẫn hành vi tự sửa sai:
-```json
-{
-  "error": {
-    "code": -32001,
-    "message": "Protocol Violation: State is [INIT]. You must call co_force_check_in(workspacePath) to transition to [READY] before you can list or create tasks.",
-    "recovery_action": "co_force_check_in(workspacePath)"
-  }
-}
-```
-LLM nhận được mã lỗi này sẽ ngay lập tức tự động sửa sai bằng cách thực hiện `recovery_action` được chỉ định.
+> [!IMPORTANT]
+> **Replaced by Plan 09:** The section below represents the original design. It has been replaced by the finalized templates and enforcement matrix documented in [Plan 09](file:///Users/trungtran/ai-agents/co-force/docs/plans/09_agent_operating_protocol.md).
 
 ---
 
 ## 10. Complete Agent Workflow
 
-> **⚠️ Phase 5–6 đã lỗi thời:** sau Quality Engine (Plan 07), không còn `update_task(completed)` trực tiếp — thay bằng `submit_verification` (evidence + commit_sha) → `code_review` chéo → rework/approve; unlock + store_memory chạy khi task thật sự completed. Workflow chốt từ góc nhìn agent: Plan 09 §2, §5.
-
-```mermaid
-flowchart TD
-    Start([👤 User mở dự án<br/>+ kết nối AI Agent]) --> CheckIn
-
-    subgraph "Phase 1: Nhận diện"
-        CheckIn["🔧 co_force_check_in()<br/>→ Tôi là ai? Task dở?<br/>→ Ai đang online?"]
-    end
-
-    CheckIn --> UserPrompt["👤 User nhập prompt"]
-
-    subgraph "Phase 2: Phân tích"
-        UserPrompt --> Recall["🔧 co_force_recall(prompt)<br/>→ Tìm memory/knowledge liên quan"]
-        Recall --> Skills["🔧 co_force_list_skills()<br/>→ Skill nào hỗ trợ?"]
-        Skills --> Draft["🔧 co_force_create_tasks(tasks[])<br/>→ Draft task list"]
-    end
-
-    subgraph "Phase 3: Validate"
-        Draft --> Recheck["🔧 co_force_recheck_tasks()<br/>→ Lỗ hổng logic?<br/>→ Thiếu use case?"]
-        Recheck --> HasGap{Có vấn đề?}
-        HasGap -->|Có| AskUser["Hỏi user bổ sung"]
-        AskUser --> Draft
-        HasGap -->|Không| Present["Trình bày cho user<br/>+ giải thích reasoning"]
-    end
-
-    subgraph "Phase 4: Confirm"
-        Present --> Confirm{User confirm?}
-        Confirm -->|Chỉnh sửa| Draft
-        Confirm -->|Approve| Approve["🔧 co_force_approve_tasks()"]
-    end
-
-    subgraph "Phase 5: Triển khai"
-        Approve --> Lock["🔧 co_force_lock_files()"]
-        Lock --> Execute["Triển khai task"]
-        Execute --> Update["🔧 co_force_update_task()<br/>(liên tục)"]
-        Update --> NeedHelp{Cần delegate?}
-        NeedHelp -->|Có| Delegate["🔧 co_force_delegate_task()"]
-        NeedHelp -->|Không| Continue["Tiếp tục"]
-        Continue --> Execute
-    end
-
-    subgraph "Phase 6: Hoàn thành"
-        Continue --> Done["🔧 co_force_update_task(completed)"]
-        Done --> Unlock["🔧 co_force_unlock_files()"]
-        Unlock --> SaveMemory["🔧 co_force_store_memory()"]
-    end
-
-    SaveMemory --> End([✅ Task Done])
-```
+> [!IMPORTANT]
+> **Obsolete Workflow:** With the introduction of the Quality Engine (Plan 07), direct status=completed transitions are forbidden. Task progress traverses `submit_verification` (evidence + commit_sha) → `code_review` chéo → rework/approve. The finalized workflow is documented in [Plan 09](file:///Users/trungtran/ai-agents/co-force/docs/plans/09_agent_operating_protocol.md) §2 and §5.
 
 ---
 
@@ -1743,113 +1395,33 @@ flowchart TD
 
 ### 11.1 Analysis Matrix
 
-| Scenario                            | Scalability | Coordination<br/>Overhead | Conflict<br/>Risk | Performance | UX<br/>Complexity |
-| :---------------------------------- | :---------- | :------------------------ | :---------------- | :---------- | :---------------- |
-| **1 User, 1 Agent, 1 Workspace**    | ⭐⭐⭐⭐⭐  | None                      | None              | Excellent   | Simple            |
-| **1 User, N Agents, 1 Workspace**   | ⭐⭐⭐⭐    | Low                       | Medium            | Good        | Medium            |
-| **N Users, N Agents, 1 Workspace**  | ⭐⭐⭐      | Medium                    | High              | Good        | Complex           |
-| **1 User, 1 Agent, N Workspaces**   | ⭐⭐⭐⭐⭐  | None                      | None              | Excellent   | Simple            |
-| **N Users, N Agents, N Workspaces** | ⭐⭐⭐      | High                      | High              | Fair        | Complex           |
+| Scenario                            | Scalability | Coordination Overhead | Conflict Risk | Performance | UX Complexity |
+| :---------------------------------- | :---------- | :-------------------- | :------------ | :---------- | :------------ |
+| **1 User, 1 Agent, 1 Workspace**    | ⭐⭐⭐⭐⭐  | None                  | None          | Excellent   | Simple        |
+| **1 User, N Agents, 1 Workspace**   | ⭐⭐⭐⭐    | Low                   | Medium        | Good        | Medium        |
+| **N Users, N Agents, 1 Workspace**  | ⭐⭐⭐      | Medium                | High          | Good        | Complex       |
+| **1 User, 1 Agent, N Workspaces**   | ⭐⭐⭐⭐⭐  | None                  | None          | Excellent   | Simple        |
+| **N Users, N Agents, N Workspaces** | ⭐⭐⭐      | High                  | High          | Fair        | Complex       |
 
-### 11.2 Detailed Analysis per Scenario
+### 11.2 Scenario Details
 
 #### Scenario 1: Single User, Single Agent, Single Workspace (Baseline)
-
-```mermaid
-graph LR
-    U["👤 User"] --> A["🤖 Agent"] --> MCP["⚙️ Co-Force"]
-```
-
-| Aspect            | Assessment                                                                          |
-| :---------------- | :---------------------------------------------------------------------------------- |
-| **Effectiveness** | ⭐⭐⭐⭐⭐ — Full benefit: task tracking, memory, skill accumulation                |
-| **Overhead**      | Minimal — no coordination needed                                                    |
-| **Value prop**    | Memory persistence across sessions, auto-skill creation, structured task management |
-| **Risk**          | None                                                                                |
-
----
+- **Effectiveness:** ⭐⭐⭐⭐⭐ — Delivers full task, memory, and skill accumulation benefits.
+- **Overhead:** Minimal — zero coordination required.
+- **Value Prop:** Persistent memory across sessions, structured tasks.
 
 #### Scenario 2: Single User, Multiple Agents, Single Workspace
+- **Effectiveness:** ⭐⭐⭐⭐ — Parallel work paths, delegation, shared knowledge.
+- **Coordination:** File locks prevent overlaps. Teammate awareness via `list_agents`.
+- **Value Prop:** Multi-agent specialization, consolidated memory.
 
-```mermaid
-graph LR
-    U["👤 User"] --> A1["🤖 Agent 1 (Frontend)"]
-    U --> A2["🤖 Agent 2 (Backend)"]
-    A1 --> MCP["⚙️ Co-Force"]
-    A2 --> MCP
-```
-
-| Aspect            | Assessment                                                         |
-| :---------------- | :----------------------------------------------------------------- |
-| **Effectiveness** | ⭐⭐⭐⭐ — Parallel work, task delegation, shared knowledge        |
-| **Coordination**  | File locking prevents conflicts. Agent awareness via `list_agents` |
-| **Value prop**    | 2x throughput, specialized roles, shared memory pool               |
-| **Risk**          | Medium — file conflicts if agents forget to lock                   |
-| **Mitigation**    | Onboarding guide enforces lock-before-edit rule                    |
-
-**Use Case Example:**
-
-- Agent 1 (Antigravity): Implement React frontend
-- Agent 2 (Cursor): Implement Express API
-- Both share memory about API contracts via Co-Force
-- Agent 1 delegates "Write API client SDK" to Agent 2
-
----
-
-#### Scenario 3: Multiple Users, Multiple Agents, Single Workspace (Same Machine)
-
-```mermaid
-graph LR
-    U1["👤 User A"] --> A1["🤖 Agent 1"]
-    U2["👤 User B"] --> A2["🤖 Agent 2"]
-    A1 --> MCP["⚙️ Co-Force"]
-    A2 --> MCP
-```
-
-| Aspect            | Assessment                                                              |
-| :---------------- | :---------------------------------------------------------------------- |
-| **Effectiveness** | ⭐⭐⭐ — Team collaboration, but needs discipline                       |
-| **Coordination**  | High — users must communicate + file locks must be respected            |
-| **Value prop**    | Shared task board, no duplicate work, conflict prevention               |
-| **Risk**          | High — different users may approve conflicting tasks                    |
-| **Mitigation**    | Task `delegatedFrom` tracks ownership; Dashboard shows real-time status |
-
----
+#### Scenario 3: Multiple Users, Multiple Agents, Single Workspace (Same machine)
+- **Effectiveness:** ⭐⭐⭐ — Collaborative execution, requires developer alignment.
+- **Coordination:** Draggable task boards, lock conflicts visible.
 
 #### Scenario 4: Multiple Users, Multiple Agents, Multiple Workspaces (Distributed)
-
-```mermaid
-graph TB
-    subgraph "Machine A (Developer)"
-        UA["👤 User A"]
-        A1["🤖 Agent 1"]
-    end
-
-    subgraph "Machine B (Developer)"
-        UB["👤 User B"]
-        A2["🤖 Agent 2"]
-    end
-
-    subgraph "Co-Force Server (LAN / Shared)"
-        MCP["⚙️ Co-Force Central Server"]
-        DB["💾 Central SQLite"]
-        VEC["🧠 Central Vector Store"]
-    end
-
-    A1 -->|SSE / HTTP| MCP
-    A2 -->|SSE / HTTP| MCP
-    MCP --> DB
-    MCP --> VEC
-```
-
-| Aspect            | Assessment                                                                                                                                      |
-| :---------------- | :---------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Effectiveness** | ⭐⭐⭐ — Team collaboration, real-time coordination                                                                                            |
-| **Coordination**  | High — all lock/task state in central DB, real-time via SSE                                                                                    |
-| **Conflict Risk** | Low — file locks enforced centrally, no stale data                                                                                             |
-| **Value prop**    | Distributed team sees each other's work in real-time; shared knowledge base                                                                     |
-| **Risk**          | Network dependency — if central server is unreachable, agents enter read-only fallback mode                                                     |
-| **Mitigation**    | 1. Auto-reconnect with exponential backoff<br/>2. Local `.co-force/session_status.json` cache for offline reads<br/>3. Central server runs on always-on machine (dedicated or one team member's) |
+- **Effectiveness:** ⭐⭐⭐ — Real-time distributed synchronization.
+- **Coordination:** Central SQLite manages conflicts; client long-polling provides real-time updates.
 
 ---
 
@@ -1871,7 +1443,7 @@ quadrantChart
     "NU NA NW (distributed)": [0.80, 0.65]
 ```
 
-**Sweet Spot:** 1 User, 2-3 Agents, 1 Workspace trên cùng máy — hiệu quả nhất, complexity vừa phải.
+**Sweet Spot:** 1 User, 2-3 Agents, 1 Workspace running on the same host — maximum value, reasonable complexity.
 
 ---
 
@@ -1881,146 +1453,57 @@ quadrantChart
 
 | Component                  | Feasibility | Confidence | Key Challenge                          | Mitigation                                                     |
 | :------------------------- | :---------- | :--------- | :------------------------------------- | :------------------------------------------------------------- |
-| **MCP Server (Rust/rmcp)** | 🟢 High     | 90%        | rmcp v0.16 (pre-1.0)                   | Protocol is stable JSON-RPC; fallback to manual implementation |
-| **SQLite (rusqlite)**      | 🟢 High     | 95%        | Async wrapper needed                   | tokio-rusqlite is battle-tested                                |
-| **Ollama Integration**     | 🟢 High     | 95%        | Ollama must be running                 | Fallback mode (store without embedding)                        |
-| **Vector DB (embedvec)**   | 🟢 High     | 85%        | Relatively new crate                   | Simple cosine similarity fallback if needed                    |
-| **Agentic Chunking**       | 🟡 Medium   | 70%        | Semantic boundary detection in Rust    | Delegate to Ollama LLM for boundary decisions                  |
-| **LLM Classification**     | 🟡 Medium   | 75%        | gemma4:e2b accuracy for classification | Few-shot prompting + confidence threshold                      |
-| **Skill Auto-Detection**   | 🟡 Medium   | 65%        | Distinguishing skill from knowledge    | Pattern detection + LLM validation                             |
-| **Cross-Machine Sync**     | 🟢 High     | 85%        | Network dependency on central server   | Auto-reconnect, offline read cache, local session_status.json  |
-| **Tauri App**              | 🟢 High     | 90%        | NextJS integration in Tauri            | Well-documented, official Tauri + Next template                |
-| **Dashboard WebSocket**    | 🟢 High     | 90%        | WS server in Rust                      | tokio-tungstenite, well-established                            |
-| **File Lock System**       | 🟢 High     | 90%        | Stale lock cleanup                     | TTL-based expiration + heartbeat                               |
+| **MCP Server (Rust/rmcp)** | 🟢 High     | 97%        | API changes                            | Interface abstracted behind standard core traits               |
+| **SQLite (rusqlite)**      | 🟢 High     | 95%        | Concurrent write latency               | Enable WAL mode, configure busy timeout                        |
+| **Ollama Integration**     | 🟢 High     | 95%        | Ollama service stability               | Standard status probes, restart triggers                       |
+| **Vector DB (embedded)**   | 🟢 High     | 95%        | Search latency at scale                | Use in-memory float calculation, upgrade path to sqlite-vec     |
+| **Agentic Chunking**       | 🟡 Medium   | 70%        | Code boundary parsing                  | structural parser + regex fallbacks                            |
+| **Tauri App**              | 🟢 High     | 90%        | WebView layout compatibility           | Tauri template defaults                                        |
 
 ### 12.2 Overall Feasibility Score
 
-| Phase                | Score      | Timeline Estimate |
-| :------------------- | :--------- | :---------------- |
-| Phase 1: Core MCP    | 🟢 88%     | 2-3 weeks         |
-| Phase 2: Agentic RAG | 🟡 73%     | 2-3 weeks         |
-| Phase 3: Dashboard   | 🟢 85%     | 1-2 weeks         |
-| **Overall**          | **🟡 82%** | **5-8 weeks**     |
+- Phase 1 (Core MCP): 🟢 88%
+- Phase 2 (RAG & LLM): 🟡 73%
+- Phase 3 (Dashboard): 🟢 85%
+- **Overall: 🟡 82%** (5-8 weeks estimated effort)
 
 ---
 
 ## 13. Risk Matrix & Mitigation
 
-### 13.1 Risk Heat Map
-
-| Risk ID | Risk                                               | Probability | Impact | Level | Mitigation                                                              |
-| :------ | :------------------------------------------------- | :---------- | :----- | :---- | :---------------------------------------------------------------------- |
-| R-01    | `rmcp` crate API breaking changes                  | Medium      | High   | 🔴    | Pin version; protocol is stable enough to fork if needed                |
-| R-02    | Ollama not installed/running                       | High        | Medium | 🟡    | Graceful fallback: store without embedding, retry queue                 |
-| R-03    | `embedvec` performance issues at scale             | Low         | High   | 🟡    | Benchmark early; fallback to hnswlib-rs                                 |
-| R-04    | Central server offline or network disconnect       | Medium      | High   | 🔴    | Auto-reconnect, client advisory warnings, offline fallback read mode    |
-| R-05    | LLM classification accuracy too low                | Medium      | Medium | 🟡    | Few-shot prompting, confidence thresholds, manual override              |
-| R-06    | Agent doesn't follow onboarding rules              | High        | Medium | 🟡    | 4-Layer Guardrails: workspace rules injection, inducement in tool description, check-in requirements blocking other tools, local guard files |
-| R-07    | SQLite write contention (2+ agents same machine)   | Medium      | Low    | 🟢    | WAL mode, retry logic, single-writer design                             |
-| R-08    | gemma4:e2b insufficient for agentic tasks          | Medium      | High   | 🟡    | Configurable model; test with qwen3:4b, llama3.3:8b                     |
-| R-09    | Tauri + NextJS integration issues                  | Low         | Medium | 🟢    | Official template exists; well-documented                               |
-| R-10    | Memory/knowledge accumulates too much noise        | Medium      | Medium | 🟡    | Confidence scoring, periodic cleanup, access_count decay                |
-| R-11    | Skill auto-detection false positives               | High        | Low    | 🟢    | Human review via Dashboard; confidence threshold 0.8+                   |
-| R-12    | Cross-platform compatibility (macOS/Linux/Windows) | Low         | Medium | 🟢    | Rust cross-compiles well; Tauri handles platform abstraction            |
-
-### 13.2 Critical Risks & Detailed Mitigation
-
-#### R-01: rmcp Breaking Changes
-
-```
-Risk: rmcp is v0.16 (pre-1.0). API may change.
-Impact: All MCP tools need refactoring.
-Mitigation:
-  1. Abstract rmcp behind an internal trait → isolate changes
-  2. Pin exact version in Cargo.toml
-  3. MCP protocol itself (JSON-RPC over stdio) is VERY stable
-  4. Worst case: implement JSON-RPC manually (~500 lines of Rust)
-```
-
-#### R-04: Central Server Offline or Network Disconnect
-
-```
-Risk: Central Co-Force Server is offline or unreachable via network
-Impact: Agents cannot check in, obtain locks, or sync tasks/memory, stalling coordinate workflows
-
-Mitigation Strategy (Defense in Depth):
-  Layer 1: Offline Fallback — client-side tool wrapper falls back to read-only or warning-only mode
-  Layer 2: Advisory Warnings — show prominent warnings to the user in their IDE/terminal that they are offline
-  Layer 3: Local Cache — cache the latest session status file (.co-force/session_status.json) locally so agents can read their assigned tasks
-  Layer 4: Auto-reconnect — server client library automatically retries connection when connection drops
-```
-
-#### R-08: gemma4:e2b Accuracy for Classification
-
-```
-Risk: Small model (2B params) may misclassify memory vs knowledge vs skill
-Impact: Wrong classification → wrong information returned to agent
-
-Mitigation:
-  1. Use few-shot prompting with 3-5 examples per category
-  2. Set confidence threshold (< 0.7 → ask agent to provide type manually)
-  3. Allow manual override: co_force_store_memory({type: "knowledge"})
-  4. Configurable model: user can switch to larger model if needed
-  5. Periodic recheck: background job re-classifies low-confidence entries
-```
+| Risk ID | Risk                                          | Probability | Impact | Level | Mitigation                                                              |
+| :------ | :-------------------------------------------- | :---------- | :----- | :---- | :---------------------------------------------------------------------- |
+| R-01    | `rmcp` API breaking changes                   | Medium      | High   | 🟡    | Pin stable rmcp versions in Cargo.toml                                  |
+| R-02    | Ollama service down                           | High        | Medium | 🟡    | systemd watchdog alerts, tools return ServiceUnavailable                |
+| R-04    | Server offline                                | Medium      | High   | 🔴    | Long-polling timeouts set to 55s, client auto-reconnect loops           |
+| R-06    | Agent bypasses protocol                       | High        | Medium | 🟡    | Enforced via 4-Layer Guardrails (Layers 1-3 active by default)          |
+| R-08    | Classifier model inaccurate                   | Medium      | High   | 🟡    | Few-shot prompts, validation threshold keys                             |
 
 ---
 
 ## 14. Codebase Architecture & Engineering Guidelines
 
-Để đảm bảo dự án phát triển bền vững, dễ bảo trì, dễ kiểm thử và phối hợp hiệu quả, codebase của Co-Force tuân thủ nghiêm ngặt các tiêu chuẩn kiến trúc phần mềm sau:
+### 14.1 Clean Architecture
+The codebase is structured under Clean Architecture principles to enforce domain decoupling:
+1. **Domain Layer (`src/domain/` & `src/types/`):** Pure models (`Agent`, `Task`, `Memory`) and business logic rules. Free from external library imports or DB adapters.
+2. **Ports Layer (`engine/ports.rs`):** Defines Rust traits (e.g. `LockRepository`, `LlmProvider`) mediating application logic and implementation layers.
+3. **Use Case Layer (`engine/`):** Implements business workflows (e.g. `CheckInUseCase`). Interacts strictly with traits and domain models.
+4. **Adapters Layer (`src/db/`, `src/llm/`):** Concrete implementations (e.g. SQLite database read/writes, Ollama HTTP queries).
+5. **Presentation Layer (`co-force-mcp`):** Handles tool routing and exposes tools.
 
-### 14.1 Clean Architecture (Kiến trúc Sạch)
-Dự án được phân rã thành các tầng cô lập rõ ràng trong crate `co-force-core`:
-1. **Domain Layer (Tầng Nghiệp vụ Gốc - `src/domain/` & `src/types/`):** Chứa các struct dữ liệu chính (`Agent`, `Task`, `Memory`, `Skill`) và các rule nghiệp vụ bất biến. Tầng này độc lập hoàn toàn với cơ sở dữ liệu, network, và các thư viện ngoài.
-2. **Ports/Interfaces Layer (Tầng Cổng Giao tiếp):** Định nghĩa các Rust Trait (ví dụ: `LockRepository`, `LlmProvider`) để làm cầu nối giữa nghiệp vụ và hạ tầng kỹ thuật.
-3. **Use Cases/Application Layer (Tầng Nghiệp vụ Ứng dụng - `src/usecases/` hoặc `src/engine/`):** Điều phối luồng xử lý chính (ví dụ: thực hiện Lock, Check-in, Reclaiming). Tầng này chỉ tương tác với Domain Layer và các Ports Trait.
-4. **Adapters/Infrastructure Layer (Tầng Hạ tầng - `src/db/`, `src/llm/`):** Cài đặt cụ thể các trait. Ví dụ, `rusqlite` cho database, và `reqwest` gọi API của Ollama/OpenAI.
-5. **Presentation Layer (Tầng Giao diện/Biên dịch - `crates/co-force-mcp`, `crates/co-force-tauri`):** Nhận input và gọi Use Case để thực thi.
+### 14.2 Event-Driven Architecture
+Loosely coupled modules coordinate via an in-memory broadcast channel (`tokio::sync::broadcast`). System daemons subscribe to `WorkspaceEvent` signals (e.g. `FilesLocked`) to trigger document regeneration or heartbeat validations asynchronously.
 
-```
-┌──────────────────────────────────────────────────────────┐
-│  Presentation Layer (co-force-mcp / co-force-tauri)      │
-│      ▼                                                   │
-│  Use Cases Layer (Business Engine Logic)                 │
-│      ▼                                                   │
-│  Ports Layer (Traits: Repository, LLM Interfaces)        │
-│      ▲                                                   │
-│  Adapters Layer (SQLite DB, Ollama/OpenAI Clients)       │
-└──────────────────────────────────────────────────────────┘
-```
-
-### 14.2 Event-Driven Architecture (Kiến trúc Hướng sự kiện)
-Để đảm bảo các module có độ liên kết lỏng (loose coupling) và dễ mở rộng các tính năng phụ trợ (như real-time updates trên Dashboard, auto-cleanups):
-- Co-Force triển khai một **In-Memory Event Bus** bằng kênh truyền phát bất đồng bộ (`tokio::sync::broadcast`).
-- Các sự kiện hệ thống (`Event` enum) bao gồm:
-  - `AgentCheckedIn { agent_id, workspace_id }`
-  - `FileLocked { file_paths, agent_id }`
-  - `TaskStatusUpdated { task_id, old_status, new_status }`
-  - `ConnectionDropped { agent_session_id }`
-  - `ResourceReclaimed { agent_id }`
-- Các module khác có thể đăng ký nhận sự kiện (Subscribe) mà không can thiệp vào luồng chính. Ví dụ:
-  - Dashboard WebSocket Server đăng ký nhận sự kiện để push trực tiếp sang GUI.
-  - Cleanup Daemon đăng ký nhận `ConnectionDropped` để khởi động bộ đếm 2 phút thu hồi khóa.
-
-### 14.3 Nguyên tắc SOLID & Strong Typing trong Rust
-- **Strong Typing (Kiểu dữ liệu mạnh):** Tránh sử dụng kiểu dữ liệu nguyên thủy (String, i32) đại trà. Sử dụng mẫu Newtype (như `struct TaskId(String)`) và Enums (`enum TaskStatus`) để bắt lỗi logic ở compile-time.
-- **Dependency Inversion Principle (DIP):** Tất cả các struct use case đều nhận dependency thông qua hàm khởi tạo `new(repo: Arc<dyn LockRepository>)` thay vì tự khởi tạo concrete struct. Điều này phục vụ hoàn hảo cho việc chèn mock khi viết unit test.
-- **Single Responsibility Principle (SRP):** Tách biệt rõ ràng file lock controller với DB query logic và OS commands executor.
-
-### 14.4 Chiến lược TDD & Testing (Kiểm thử Toàn diện)
-Dự án áp dụng quy trình kiểm thử nghiêm ngặt trước khi tích hợp:
-1. **Unit Tests (TDD):** Viết test case mô phỏng trước khi viết mã nguồn logic. Sử dụng crate `mockall` để mock các Repository và LLM Provider.
-2. **Integration Tests (Kiểm thử Tích hợp):** Chạy thực tế các luồng Check-in -> Lock -> Execute -> Unlock qua SSE transport giả lập để xác nhận dữ liệu SQLite và OS file lock đồng bộ chuẩn xác.
-3. **Cấu hình Linting nghiêm ngặt (Lints checking):**
-   - File cấu hình gốc của dự án bật chế độ Clippy nghiêm ngặt nhằm chặn đứng các đoạn code kém tối ưu, memory leak hay không tuân thủ Rust idioms.
-   - Thêm vào đầu các file crate: `#![deny(clippy::all, clippy::pedantic)]`.
+### 14.3 Engineering Principles
+- **Strong Typing:** Wrap primitives using Newtype wrappers (`TaskId(String)`) to catch logic errors at compile-time.
+- **Dependency Inversion:** Instructure dependencies are injected into Use Cases via `Arc<dyn Trait>` (allowing clean unit mock configurations using `mockall`).
+- **Lints Enforced:** Crate roots deny Clippy warnings: `#![deny(clippy::all, clippy::pedantic)]`.
 
 ---
 
 ## 15. Appendix
 
-### A. Agentic RAG Chunking Strategy (Detailed)
+### A. Agentic RAG Chunking Strategy
 
 ```
 Input: Any text (code, prose, config, markdown)
@@ -2033,7 +1516,6 @@ Input: Any text (code, prose, config, markdown)
 │  • .rs, .ts, .py → Code                        │
 │  • .md, .txt → Prose                            │
 │  • .json, .toml, .yaml → Config                │
-│  • Mixed → Hybrid (split then classify each)   │
 └──────────────────┬──────────────────────────────┘
                    │
                    ▼
@@ -2043,108 +1525,32 @@ Input: Any text (code, prose, config, markdown)
 │  Code: Split by function/class/module           │
 │  Prose: Split by heading/paragraph              │
 │  Config: Split by top-level key group           │
-│  Rule: Preserve complete semantic units         │
-│         (never cut mid-function or mid-sentence)│
 └──────────────────┬──────────────────────────────┘
                    │
                    ▼
 ┌─────────────────────────────────────────────────┐
 │  Step 3: Semantic Boundary Refinement           │
 │  ────────────────────────────────               │
-│  For each structural chunk > 512 tokens:        │
-│  1. Generate sentence-level embeddings          │
-│  2. Compute cosine similarity between adjacent  │
-│  3. If similarity drop > threshold (0.3):       │
-│     → Split at that boundary                    │
-│  4. Otherwise: keep together                    │
+│  Compute cosine similarity between adjacent     │
+│  sentences. Split if similarity drops below 0.3 │
 └──────────────────┬──────────────────────────────┘
                    │
                    ▼
 ┌─────────────────────────────────────────────────┐
 │  Step 4: Parent-Child Hierarchy                 │
 │  ──────────────────────────────                 │
-│  Child chunks: 128-256 tokens (for retrieval)   │
-│  Parent chunks: 512-1024 tokens (for context)   │
-│  Each child stores parent_id reference          │
-│  Retrieval: search by child → return parent     │
+│  Child chunks: 128-256 tokens (retrieval)       │
+│  Parent chunks: 512-1024 tokens (context)       │
 └──────────────────┬──────────────────────────────┘
                    │
                    ▼
 ┌─────────────────────────────────────────────────┐
 │  Step 5: Metadata Enrichment                    │
 │  ───────────────────────                        │
-│  Each chunk annotated with:                     │
-│  • source_file (path)                           │
-│  • section_heading (if prose)                   │
-│  • function_name (if code)                      │
-│  • language                                     │
-│  • chunk_type: child | parent                   │
-│  • relationships: [related_chunk_ids]           │
+│  Annotate chunks with source file, headers,     │
+│  and relations.                                 │
 └─────────────────────────────────────────────────┘
 ```
 
-### B. MCP Tool Signatures (Complete)
-
-| Tool                        | Input                                       | Output                                                       |
-| :-------------------------- | :------------------------------------------ | :----------------------------------------------------------- |
-| `co_force_check_in`         | `{workspacePath: string, agentName: string, role: string, agentId?: string}` | `{agentId, role, pendingTasks[], otherAgents[], onboarding}` |
-| `co_force_whoami`           | `{}`                                        | `{agentId, name, role, state, currentTask, lockedFiles}`     |
-| `co_force_guide`            | `{}`                                        | `{guide: string}` (full onboarding markdown)                 |
-| `co_force_create_tasks`     | `{tasks: Task[]}`                           | `{createdTaskIds[]}`                                         |
-| `co_force_list_tasks`       | `{status?: string, agentId?: string}`       | `{tasks: Task[]}`                                            |
-| `co_force_update_task`      | `{taskId, updates: Partial<Task>}`          | `{task: Task}`                                               |
-| `co_force_approve_tasks`    | `{taskIds: string[]}`                       | `{approvedCount}`                                            |
-| `co_force_delegate_task`    | `{task: Task, avoidFiles: string[]}`        | `{taskId, status}`                                           |
-| `co_force_recheck_tasks`    | `{taskIds: string[]}`                       | `{issues[], questions[], suggestions[]}`                     |
-| `co_force_lock_files`       | `{files: string[], taskId?: string}`        | `{locked[], conflicts[]}`                                    |
-| `co_force_unlock_files`     | `{files: string[]}`                         | `{unlocked[]}`                                               |
-| `co_force_check_conflicts`  | `{files: string[]}`                         | `{results: {file, locked, lockedBy?}[]}`                     |
-| `co_force_list_agents`      | `{}`                                        | `{agents[], summary}`                                        |
-| `co_force_workspace_status` | `{}`                                        | `{metrics, recentEvents[]}`                                  |
-| `co_force_store_memory`     | `{content, type?: string, tags?: string[]}` | `{entryId, classifiedType, confidence}`                      |
-| `co_force_recall`           | `{query, types?: string[], limit?: number}` | `{results: MemoryEntry[]}`                                   |
-| `co_force_classify`         | `{content: string}`                         | `{type, confidence, reasoning}`                              |
-| `co_force_create_skill`     | `{name, description, steps[], category}`    | `{skillId}`                                                  |
-| `co_force_list_skills`      | `{category?: string}`                       | `{skills: Skill[]}`                                          |
-| `co_force_get_skill`        | `{skillId: string}`                         | `{skill: Skill, skillMd: string}`                            |
-| `co_force_config`           | `{key: string, value: any}`                 | `{updated: true}`                                            |
-| `co_force_get_agent_context`| `{agentId?: string, includeHistory?: bool}` | `{agent, currentTask, recentActivity[], sharedMemories[], contextSummary}` |
-| `co_force_get_workspace_activity` | `{limit?: number, types?: string[]}` | `{activities: Activity[], summary}`                          |
-| `co_force_share_context`    | `{content, targetAgentId?: string, type}` | `{contextId, delivered: bool}`                               |
-| `co_force_spawn_agent`      | `{provider: string, taskId: string, context?: string}` | `{subAgentId: string, status: string, pid: number}`      |
-| `co_force_handover`         | `{reason: string, currentTaskId: string, stateSummary: string, nextProvider?: string}` | `{status: string, newAgentId: string, safeToExit: bool}` |
-
-### C. Global Configuration
-
-> **⚠️ Đã thay thế:** schema config chốt là `/etc/co-force/server.toml` tại **Plan 06 §5** (1 port duy nhất — F-13; thêm vai trò `reasoner`, `[quality]`, `[a2a]`, `[workers]`, `[providers]`). Bản dưới đây giữ lại chỉ để đối chiếu lịch sử.
-
-```toml
-[llm]
-default_classifier_provider = "ollama"
-default_embedding_provider = "ollama"
-
-[ollama]
-url = "http://localhost:11434"
-embedding_model = "mxbai-embed-large"
-classifier_model = "gemma4:e2b"
-timeout_secs = 30
-retry_count = 3
-concurrency_limit = 2
-
-[llm.providers.openai]
-api_key = "env:OPENAI_API_KEY"
-embedding_model = "text-embedding-3-small"
-classifier_model = "gpt-4o-mini"
-
-[rag]
-chunk_min_tokens = 128
-chunk_max_tokens = 256
-parent_chunk_max_tokens = 1024
-similarity_threshold = 0.3          # For semantic boundary detection
-classification_confidence_threshold = 0.7
-
-[dashboard]
-enabled = true
-port = 3847
-websocket_port = 3848
-```
+### B. MCP Tool Signatures
+Refer to [docs/architecture.md](file:///Users/trungtran/ai-agents/co-force/docs/architecture.md#L371) for the finalized list of 39 MCP tools.
