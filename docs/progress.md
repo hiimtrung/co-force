@@ -18,17 +18,17 @@
 > **Update 2026-07-08 (v2):** Direction finalized by product owner: **one end-to-end 1.0 release ready for production, NO MVP**; independent server + **cloudflared tunnel** + auth token; **Ollama is mandatory** (no degraded mode); client setup one-liner < 60s; the core of the product is the **Quality Engine** (cross-review, verification evidence, critique — Plan 07). Execution order follows workstreams WS-A...WS-I in `docs/plans/00_roadmap.md` (Master Plan). Note for DEV: **rmcp 2.x** (`tool_router`/`ServerHandler` API, streamable-http instead of SSE), **no embedvec** (vector BLOB in SQLite).
 
 ### 0. Foundation — Make workspace compile (Phase 0, highest priority)
-- `[ ]` Fix `co-force-core/src/lib.rs` (modules `db`, `workspace`, `engine`, `ollama` are declared but files are missing)
-- `[ ]` Create minimal `co-force-mcp/src/main.rs` (currently missing → `cargo check` fails)
-- `[ ]` CI: cargo test + clippy -D warnings + fmt --check
+- `[x]` Fix `co-force-core/src/lib.rs` (modules `db`, `workspace`, `engine`, `ollama` are declared but files are missing)
+- `[x]` Create minimal `co-force-mcp/src/main.rs` (currently missing → `cargo check` fails)
+- `[x]` CI: cargo test + clippy -D warnings + fmt --check
 
 ### 1. Database and Domain Layer (Plan 01)
-- `[ ]` Setup Cargo.toml dependencies (serde, tokio, rusqlite, mockall)
-- `[ ]` Define Strong Types (AgentId, TaskId, WorkspaceId...) in `types/mod.rs`
-- `[ ]` Define Enums (AgentState, TaskStatus, ActivityType...)
-- `[ ]` Define Core Structs (Agent, Task, AgentActivity, SharedContext)
-- `[ ]` Implement SQLite Migrations (001_initial.sql)
-- `[ ]` Define Repository Traits (AgentRepository, LockRepository...) in `engine/ports.rs`
+- `[x]` Setup Cargo.toml dependencies (serde, tokio, rusqlite, mockall)
+- `[x]` Define Strong Types (AgentId, TaskId, WorkspaceId...) in `types/mod.rs`
+- `[x]` Define Enums (AgentState, TaskStatus, ActivityType...)
+- `[x]` Define Core Structs (Agent, Task, AgentActivity, SharedContext)
+- `[x]` Implement SQLite Migrations (001_initial.sql)
+- `[x]` Define Repository Traits (AgentRepository, LockRepository...) in `engine/ports.rs`
 
 ### 2. MCP Server and Use Cases (Plan 02)
 - `[ ]` Implement `CheckInUseCase` (TDD, Unit Test first)
@@ -114,3 +114,4 @@
 - **[Provider CLI research v2.4 2026-07-08]**: Previous docs only mentioned Claude Code CLI (F-25). Deep research (official OpenAI/Google docs, verified 2026-07-08) + compared against `ref/tutti` (ProviderSpec registry model, Codex via app-server, ACP adapters). Created **`plans/08_provider_cli_integration.md`**: subscription-first (OAuth login, no API key burn), registry declared in config, spec verified — Codex CLI (`codex exec --json`, native MCP HTTP + `bearer_token_env_var`, auth `~/.codex/auth.json`), Antigravity CLI `agy` (Gemini CLI successor shutdown 6/2026; `agy -p`, `--dangerously-skip-permissions`, MCP `.agents/mcp_config.json`, Google OAuth keyring), + 4 caveats C1–C4 (notable: Codex exec auto-cancels MCP approvals → only bypasses in L3 sandbox). Synced: architecture §1/§5 (client nodes + provider list), Plan 03 (registry ref), Plan 05 (config table adds codex/agy + detect + machineInfo.clis), Plan 06 (§3.3 subscription login headless per CLI, `[workers].providers` 3 CLIs, health `provider.<cli>`), Plan 07 (3-vendor diversity picker, reasoner option `cli-worker`), roadmap. DEV note: ≥2 providers unlocks `reviewer_must_differ="provider"` (resolves F-22).
 - **[Review v2.3 2026-07-08]**: Third review cycle finding remaining impossibilities — 9 new findings (F-16...F-24, details in `review_findings.md` §7). 3 critical 🔴 fixes in docs: (1) Docker Compose bound 127.0.0.1 → cloudflared cannot reach (Plan 06 §2.1: bind 0.0.0.0 in container, isolate with compose network); (2) `api_tokens` cannot live in DB per-workspace because auth runs before knowing workspace → added server-level `server.db` (architecture §7, Plan 06 §4.1, WS-A); (3) token env-expansion mechanism via `.mcp.json` does not work (env var ≠ file) + per-machine token must not be in project commit files → moved to machine-scope config (`claude mcp add -s local`, `~/.cursor/mcp.json` — Plan 05 §3). 🟡 fixed: Plan 04 uses `/api/embed` (deprecated old endpoint) + finalized tool behavior when LLM is down per N2; state machine adds exits for `blocked`/`pending_handover`, reject for `awaiting_approval`, adds `cancelled` (Plan 07 §3); revision tracking redefined by server-observed events + verify `commit_sha` in mirror (Plan 07 §5.1); validate `reviewer_must_differ="provider"` policy when set to avoid gate deadlock (Plan 07 §8). 🟢: cleaned old APIs in sample Plan 02/03, progress.md; `wait_events` defaults to 25s due to client-side tool-call timeout.
 - **[Direction pivot 2026-07-08 v2]**: Product owner finalized: no-MVP (1 release end-to-end), independent server + cloudflared, Ollama mandatory/no degraded mode, client one-liner, goal = ultimate quality (not speed). Rewrote Master Plan (`00_roadmap.md` v2, 9 workstreams, ~10–12 weeks), created `plans/06_server_deployment_and_tunnel.md` + `plans/07_quality_engine_and_a2a.md`, rewrote `plans/05` (client < 60s), updated `architecture.md` v2 + `review_findings.md` §6. Added 39 MCP tools (added Quality + Messaging groups), 6 new DB tables, 3rd model role (reasoner).
+- **[Database and Domain Layer 2026-07-08]**: PM/DEV/TEST/QA completed all objectives for Plan 01. Setup dependencies, defined Strong Types (AgentId, TaskId, WorkspaceId...) and Enums/Structs. Implemented schema & migrations in SQLite (001_initial.sql) and Repository traits in ports.rs. Built concrete repository implementations using `tokio-rusqlite` for async sqlite, resolved all datetime parsing constraints and FK dependencies in test logic. Formatted codebase and fixed clippy linter warnings (cargo fmt and cargo clippy are 100% clean). All 49 unit and integration tests passed successfully.
