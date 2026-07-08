@@ -309,6 +309,8 @@ sequenceDiagram
 
 ## 6. MCP Tool Interface — Giao thức chi tiết trong Production
 
+> Phía đối diện của giao thức này — **agent học cách dùng nó thế nào** (rules template tiêm vào workspace, chuẩn tool descriptions, guide động, playbook theo role, ma trận hành-vi-đồng-nhất ↔ lớp enforce) — chốt tại **Plan 09 (Agent Operating Protocol)**.
+
 ### 6.1 Vòng đời kết nối của một agent client
 
 1. **Config:** client đọc `.mcp.json` (do enrollment script ghi): `{"type":"http", "url":"https://mcp.example.com/mcp", "headers":{"Authorization":"Bearer <agent-token>"}}`.

@@ -64,7 +64,7 @@ Lý do đổi enrollment token → agent token: token trong one-liner có thể 
    Danh sách CLI phát hiện được (claude/codex/agy/cursor-agent) được gửi kèm trong `/api/enroll` (`machineInfo.clis`) — server dùng để chọn placement L2 và gợi ý diversity policy (Plan 08 §4).
 
 4. **Token hygiene (chỉ áp cho fallback ghi token vào project):** `.gitignore` được bổ sung **trước khi** ghi file chứa token; script verify hiệu lực bằng `git check-ignore` — fail thì dừng và báo, không bao giờ để token có thể bị commit. `.co-force/` (agent.json, không chứa secret trong luồng chuẩn) vẫn luôn được gitignore.
-5. **Rule injection (Lớp 1):** ghi managed block vào `AGENTS.md`, `CLAUDE.md`, `.cursorrules` — template State-bound Instruction (URD §9.3) **đã cập nhật theo Quality Engine**: quy trình bắt buộc gồm check_in → recall → create_tasks → (recheck tự động) → chờ approve → lock → code → submit_verification → chờ review → rework nếu có findings. Kèm URL server + tên workspace.
+5. **Rule injection (Lớp 1):** ghi managed block vào `AGENTS.md`, `CLAUDE.md`, `.cursorrules` — **template chốt tại Plan 09 §2** (thay thế URD §9.3 cũ): điểm khởi đầu check_in, vòng đời task theo quality gates, quy tắc hành vi đồng nhất, bảng "tool nào khi nào". Render với biến `{{workspace_name}}`, `{{server_url}}`.
 6. **Tạo `.co-force/`:** `agent.json` (serverUrl, workspaceId), thư mục cache.
 7. **Verify end-to-end:** gọi `tools/list` qua `/mcp` với token thật **qua đúng đường config vừa ghi** (xác nhận client thật sự gửi được header — F-18) → in số tools + team đang online. Fail → in chẩn đoán cụ thể (DNS? 401 = header không tới nơi? server degraded?) và exit non-zero; client không hỗ trợ custom header → in hướng dẫn thủ công thay vì để lại config chết.
 8. **In summary** (mẫu ở §1).
@@ -73,8 +73,9 @@ Lý do đổi enrollment token → agent token: token trong one-liner có thể 
 
 ## 4. Onboarding agent lần đầu (sau setup)
 
+Toàn bộ hành trình "agent lạnh học protocol" (4 điểm chạm: rules → tool descriptions → check_in response → envelope mọi response) đặc tả tại **Plan 09 §1**. Tóm tắt:
 - Rules đã tiêm khiến agent gọi `co_force_check_in` ngay prompt đầu.
-- Response check-in đầu tiên kèm `onboarding: true` → agent được hướng dẫn gọi `co_force_guide()` — guide **sinh động theo workspace** (server render: quality policy đang bật, team hiện tại, task backlog, ví dụ tool call đúng chuẩn) chứ không phải markdown tĩnh.
+- Response check-in đầu tiên kèm `onboarding: true` → agent được hướng dẫn gọi `co_force_guide()` — guide **sinh động theo workspace** (Plan 09 §4: quality policy đang bật, team hiện tại, backlog, 3 ví dụ tool call đúng chuẩn, playbook theo role) chứ không phải markdown tĩnh.
 - Tin nhắn chờ (shared contexts, review requests tồn đọng cho role của agent) được deliver ngay trong check-in response.
 
 ## 5. Re-setup & thu hồi
