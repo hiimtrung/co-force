@@ -18,7 +18,7 @@
 Tính năng RAG (Retrieval-Augmented Generation) và phân loại dữ liệu (Classification) của Co-Force dựa hoàn toàn vào Local LLMs (Ollama) nhằm bảo mật code dự án. Module này thiết kế thuật toán **Agentic Chunking**, giải quyết nhược điểm của fixed-size chunking truyền thống (làm rách logic của code).
 
 *Tài liệu tham chiếu:*
-- `implementation_instructions.md` (Section 7: Implementing Ollama Integration)
+- `architecture.md` §1 (Ollama bắt buộc, 3 vai trò model), Plan 06 §5 (config `[llm]`)
 - `URD.md` (Section 15.A: Agentic RAG Chunking Strategy)
 
 ---
@@ -169,4 +169,4 @@ Khi agent query, hệ thống search vector similarity trên các **Child Chunks
 2. Định nghĩa cấu trúc JSON chuẩn (Serde) cho Request/Response của API Ollama (`/api/embeddings`, `/api/generate`).
 3. Cài đặt thuật toán Fallback & Retry trong `StoreMemoryUseCase`.
 4. Viết hàm `agentic_chunking` và các Unit Tests kiểm tra tính đúng đắn của việc gom nhóm token (`token_count` estimator có thể dùng `tiktoken-rs` hoặc đếm từ thô).
-5. Tích hợp thư viện Vector DB (`embedvec` hoặc tự viết hàm cosine similarity nếu data nhỏ) vào `MemoryRepository`. Đảm bảo luồng Query -> Embedding -> Cosine Similarity -> Fetch SQLite hoạt động trơn tru.
+5. Implement `BruteForceCosine` sau trait `VectorSearch` (quyết định F-02 — KHÔNG dùng thư viện vector DB nào; embedding BLOB đọc từ `memory_entries`). Đảm bảo luồng Query -> Embedding -> Cosine Similarity -> Fetch SQLite hoạt động trơn tru.

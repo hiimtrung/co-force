@@ -4,7 +4,7 @@
 **Date:** 2026-07-08  
 **Status:** Reviewed — see `docs/review_findings.md`
 
-> **⚠️ Ghi chú sau review 2026-07-08 (v2):** Một số quyết định trong tài liệu này đã được cập nhật. Khi mâu thuẫn, thứ tự ưu tiên: `docs/plans/00_roadmap.md` (Master Plan) → `docs/review_findings.md` §5–6 → `docs/architecture.md` → tài liệu này. Các thay đổi chính: rmcp 2.x + Streamable HTTP (thay SSE) · bỏ `embedvec` (vector BLOB trong SQLite) · chốt storage layout · chmod enforcement là opt-in · **một release 1.0 end-to-end, không MVP** · **server độc lập + cloudflared tunnel + auth token** (Plan 06) · **Ollama bắt buộc trên server, không có degraded mode** · **Quality Engine + A2A hai chiều là năng lực trung tâm** (Plan 07) — mục tiêu sản phẩm là chất lượng đầu ra của agents, không phải tốc độ.
+> **⚠️ Ghi chú sau review 2026-07-08 (v2):** Một số quyết định trong tài liệu này đã được cập nhật. Khi mâu thuẫn, thứ tự ưu tiên: `docs/plans/00_roadmap.md` (Master Plan) → `docs/review_findings.md` §5–6 → `docs/architecture.md` → tài liệu này. Các thay đổi chính: rmcp 2.x + Streamable HTTP (thay SSE) · bỏ `embedvec` (vector BLOB trong SQLite) · chốt storage layout · chmod enforcement là opt-in · **một release 1.0 end-to-end, không MVP** · **server độc lập + cloudflared tunnel + auth token** (Plan 06) · **Ollama bắt buộc trên server, không có degraded mode** · **Quality Engine + A2A hai chiều là năng lực trung tâm** (Plan 07) — mục tiêu sản phẩm là chất lượng đầu ra của agents, không phải tốc độ · **đa provider CLI subscription-first** (Claude Code / Codex / Antigravity `agy` — Plan 08; chỗ nào tài liệu này chỉ nhắc Claude CLI hoặc "antigravity-cli" phỏng đoán, đọc là "provider CLI trong registry Plan 08") · catalog chốt là **38 MCP tools** tại `architecture.md` §6.4 (Appendix B bên dưới chỉ dùng tra signature). File `implementation_instructions.md` đã bị xóa 2026-07-08 (chỉ dẫn lỗi thời) — dev đọc `docs/plans/01–08`.
 
 ---
 
@@ -2110,7 +2110,9 @@ Input: Any text (code, prose, config, markdown)
 | `co_force_spawn_agent`      | `{provider: string, taskId: string, context?: string}` | `{subAgentId: string, status: string, pid: number}`      |
 | `co_force_handover`         | `{reason: string, currentTaskId: string, stateSummary: string, nextProvider?: string}` | `{status: string, newAgentId: string, safeToExit: bool}` |
 
-### C. Global Configuration (`~/.co-force/config.toml`)
+### C. Global Configuration
+
+> **⚠️ Đã thay thế:** schema config chốt là `/etc/co-force/server.toml` tại **Plan 06 §5** (1 port duy nhất — F-13; thêm vai trò `reasoner`, `[quality]`, `[a2a]`, `[workers]`, `[providers]`). Bản dưới đây giữ lại chỉ để đối chiếu lịch sử.
 
 ```toml
 [llm]

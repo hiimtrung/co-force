@@ -6,9 +6,9 @@
 ## 1. Context & Mục Tiêu
 Tầng Domain chứa các định nghĩa dữ liệu cốt lõi (Strong Types) và nghiệp vụ bất biến. Tầng Database đảm nhiệm việc lưu trữ thông qua SQLite (dùng `tokio-rusqlite`). Việc thiết kế kỹ tầng này đảm bảo hệ thống không bị lỗi nhầm lẫn ID (nhờ Strong Typing) và các module khác dễ dàng mock data để test (thông qua Repository Traits).
 
-*Tài liệu tham chiếu:* 
-- `implementation_instructions.md` (Section 3.1, 3.2, 5)
-- `URD.md` (Section 5, Section 14.1, Group H)
+*Tài liệu tham chiếu:*
+- `architecture.md` §7 (bố cục dữ liệu 2 tầng: `server.db` + DB per-workspace — F-17)
+- `URD.md` (Section 14.1, Group H); Plan 07 §3 (task state machine), Plan 06 §4.1 (`api_tokens` trong `server.db`)
 
 ---
 
@@ -42,9 +42,14 @@ pub struct ContextId(pub String);
 #[serde(rename_all = "snake_case")]
 pub enum AgentState { Idle, Working, Paused, Disconnected }
 
+// Theo state machine Plan 07 §3 (quality gates + F-20)
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
-pub enum TaskStatus { Draft, PendingReview, Approved, InProgress, Blocked, Completed, Failed, PendingHandover }
+pub enum TaskStatus {
+    Draft, SpecReview, AwaitingApproval, Approved, InProgress,
+    Verification, CodeReview, Rework, Completed,
+    Blocked, PendingHandover, Cancelled,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
@@ -92,20 +97,101 @@ pub struct SharedContext {
 ---
 
 ## 3. SQLite Schema & Migrations
-**File cần tạo:** `crates/co-force-core/src/db/migrations/001_initial.sql`
 
-Triển khai đúng schema được đề cập trong `implementation_instructions.md` và bổ sung 2 bảng mới từ `URD.md`.
+**Hai tầng DB (F-17):** migrations riêng cho `server.db` (bảng `api_tokens`, `workspaces`, `audit_log` — schema tại Plan 06 §4.1) và cho DB per-workspace (dưới đây). Các bảng Quality Engine (`agent_messages`, `reviews`, `critiques`, `verification_records`, `quality_policies`, `quality_scores`) theo Plan 07 §4–5.
+
+**File cần tạo:** `crates/co-force-core/src/db/migrations/001_initial.sql` (per-workspace)
 
 ```sql
 PRAGMA journal_mode=WAL;
 PRAGMA foreign_keys=ON;
 
-CREATE TABLE IF NOT EXISTS agents (...); -- Từ doc
-CREATE TABLE IF NOT EXISTS tasks (...); -- Từ doc
-CREATE TABLE IF NOT EXISTS file_locks (...); -- Từ doc
-CREATE TABLE IF NOT EXISTS memory_entries (...); -- Từ doc
-CREATE TABLE IF NOT EXISTS skills (...); -- Từ doc
-CREATE TABLE IF NOT EXISTS embedding_cache (...); -- Từ doc
+CREATE TABLE IF NOT EXISTS agents (
+    agent_id     TEXT PRIMARY KEY,
+    workspace_id TEXT NOT NULL,
+    name         TEXT NOT NULL,
+    role         TEXT DEFAULT 'developer',
+    provider     TEXT,
+    machine_id   TEXT NOT NULL,
+    state        TEXT DEFAULT 'idle',
+    current_task_id TEXT,
+    last_seen    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS tasks (
+    task_id      TEXT PRIMARY KEY,
+    workspace_id TEXT NOT NULL,
+    title        TEXT NOT NULL,
+    objective    TEXT,
+    status       TEXT DEFAULT 'draft',   -- giá trị theo TaskStatus (Plan 07 §3)
+    revision     INTEGER DEFAULT 1,      -- F-21: tăng theo sự kiện server quan sát được
+    rework_cycle INTEGER DEFAULT 0,      -- Plan 07 §3: quá max → escalate
+    assigned_agent_id       TEXT,
+    delegated_from_agent_id TEXT,
+    parent_task_id          TEXT,
+    use_cases    TEXT,   -- JSON
+    prerequisites TEXT,  -- JSON
+    verification_plan TEXT, -- JSON
+    required_skills   TEXT, -- JSON
+    locked_files      TEXT, -- JSON
+    impact_analysis   TEXT, -- JSON
+    priority     INTEGER DEFAULT 0,
+    created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    completed_at TIMESTAMP,
+    FOREIGN KEY (assigned_agent_id) REFERENCES agents(agent_id),
+    FOREIGN KEY (parent_task_id)    REFERENCES tasks(task_id)
+);
+
+CREATE TABLE IF NOT EXISTS file_locks (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    workspace_id TEXT NOT NULL,
+    file_path    TEXT NOT NULL,
+    agent_id     TEXT NOT NULL,
+    machine_id   TEXT NOT NULL,
+    task_id      TEXT,
+    reason       TEXT,
+    locked_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    expires_at   TIMESTAMP,
+    UNIQUE(workspace_id, file_path),
+    FOREIGN KEY (agent_id) REFERENCES agents(agent_id)
+);
+
+CREATE TABLE IF NOT EXISTS memory_entries (
+    entry_id     TEXT PRIMARY KEY,
+    workspace_id TEXT NOT NULL,
+    entry_type   TEXT NOT NULL,  -- 'memory' | 'knowledge' | 'skill'
+    content      TEXT NOT NULL,
+    source       TEXT,
+    agent_id     TEXT,
+    confidence   REAL DEFAULT 1.0,
+    tags         TEXT,           -- JSON array
+    embedding    BLOB,           -- F-02: vector nằm ngay trong DB; NULL = đang chờ re-embed
+                                 -- (recall báo PARTIAL_INDEX — F-19, không có vector_id/index file riêng)
+    created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    accessed_at  TIMESTAMP,
+    access_count INTEGER DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS skills (
+    skill_id     TEXT PRIMARY KEY,
+    workspace_id TEXT NOT NULL,
+    name         TEXT NOT NULL,
+    description  TEXT,
+    category     TEXT,
+    steps        TEXT,           -- JSON array
+    source_memories TEXT,        -- JSON array of entry_ids
+    usage_count  INTEGER DEFAULT 0,
+    created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS embedding_cache (
+    content_hash TEXT PRIMARY KEY, -- SHA-256 của content
+    embedding    BLOB NOT NULL,
+    created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
 
 -- Bổ sung từ URD Group H:
 CREATE TABLE IF NOT EXISTS agent_activities (
@@ -133,6 +219,10 @@ CREATE TABLE IF NOT EXISTS shared_contexts (
     resolved_at TIMESTAMP,
     FOREIGN KEY (source_agent_id) REFERENCES agents(agent_id)
 );
+
+-- Hot-path indexes (Master Plan WS-A)
+CREATE INDEX IF NOT EXISTS idx_activities_ws_time ON agent_activities(workspace_id, occurred_at);
+CREATE INDEX IF NOT EXISTS idx_memory_ws_type ON memory_entries(workspace_id, entry_type);
 ```
 
 **File cần tạo:** `crates/co-force-core/src/db/mod.rs`
