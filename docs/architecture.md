@@ -257,8 +257,8 @@ Provider CLIs được hỗ trợ (subscription-first — spec, flags headless, 
 | :--- | :--- |
 | Cần sửa/đọc file local **chưa push** | L2 (duy nhất khả thi) |
 | Cần role bù (reviewer/critic) và code đã có trên remote | **L3 ưu tiên** — không tốn tài nguyên máy dev, đảm bảo diversity provider dễ hơn |
-| Handover: agent sắp cạn context nhưng còn gọi được tool | Server hướng dẫn qua `protocol_next_step`: commit + push WIP branch → L3 tiếp tục; hoặc L2 nếu tiếp tục trên cùng máy |
-| Client chết đột ngột (không kịp handover) | Reclaim sau grace 2 phút; có WIP branch đã push → L3 tiếp tục được; không có → task về backlog chờ client |
+| Handover: agent sắp cạn context **hoặc chạm rate limit subscription** nhưng còn gọi được tool | Handover package (validated) + locks vào **escrow theo task** → ưu tiên **agent provider khác đang online** (offer qua inbox) → L3 nếu đã push → L2 cùng máy nếu code local chưa push. Cooldown provider được ghi lại. Chi tiết: Plan 03 §5 |
+| Client chết đột ngột (không kịp handover) | Reclaim sau grace 2 phút; **có agent provider khác online → tự động offer** kèm package server tổng hợp (task + activity journal + git state); có WIP đã push → L3; không có gì → task về backlog + alert |
 | Workspace không có git remote | Chỉ L1/L2; yêu cầu L3 → `SPAWN_DENIED {reason: "no_remote_for_server_placement"}` — báo rõ, không âm thầm bỏ gate |
 
 ### 5.5 Đồng bộ code & locks đa máy
@@ -363,11 +363,12 @@ sequenceDiagram
 | `GATE_VIOLATION` | nhảy cóc state machine (vd set `completed` trực tiếp) | `co_force_submit_verification(...)` |
 | `EVIDENCE_STALE` | evidence gắn revision cũ, hoặc `commit_sha` không tồn tại trong mirror (chưa push — F-21) | re-run tests / push commit → submit lại |
 | `SPAWN_DENIED` | quá depth / thiếu remote / provider ngoài allowlist | kèm reason cụ thể |
+| `HANDOVER_INCOMPLETE` | package bàn giao thiếu/mơ hồ (reasoner validate — Plan 03 §5.2) | bổ sung đúng trường được chỉ ra rồi gọi lại |
 | `SERVICE_UNAVAILABLE` | component server down (LLM, DB...) — fail-loud N2 | retry sau `retry_after_secs`; ops đã được alert |
 | `PARTIAL_INDEX` (warning kèm data) | recall khi re-embed đang chạy | kết quả kèm `pending_count` — minh bạch độ tin cậy |
 | `RATE_LIMITED` | vượt rpm per token | backoff theo `retry_after_secs` |
 
-### 6.4 Catalog 38 MCP Tools (chốt cho Release 1.0 — signatures chi tiết: URD App. B + Plan 07 §4–6)
+### 6.4 Catalog 39 MCP Tools (chốt cho Release 1.0 — signatures chi tiết: URD App. B + Plan 07 §4–6, Plan 10 §3)
 
 | # | Tool | Một dòng | Ghi chú gate/session |
 | :- | :--- | :--- | :--- |
@@ -398,7 +399,8 @@ sequenceDiagram
 | 20 | `co_force_wait_events` | Long-poll ≤ 55s chờ tin/gate event (agent "trực chiến") | Tương thích Cloudflare timeout |
 | 21 | `co_force_share_context` | Share context có chủ đích (lazy resolve) | |
 | 22 | `co_force_spawn_agent` | Xin spawn → `spawn_directive` (L2) hoặc server tự chạy worker (L3) | Placement matrix §5.4 |
-| 23 | `co_force_handover` | Bàn giao khi cạn context (state summary + WIP) | Tự nhả locks |
+| 23 | `co_force_handover` | Bàn giao khi cạn context / chạm rate limit (package validated + WIP) | Locks vào escrow, chuyển atomic cho người kế nhiệm — cross-provider: Plan 03 §5 |
+| 39 | `co_force_plan_team` | Solo/PM: phân tích backlog → estimate team (dev/reviewer/qa/ba) + spawn plan | Plan 10 §3; kèm nudge solo trong check_in (`team_context.solo`) |
 | **Quality** | | | |
 | 24 | `co_force_request_review` | Xin review (thường tự kích hoạt khi qua verification) | Separation of duties enforce ở server |
 | 25 | `co_force_submit_review` | Verdict + findings có cấu trúc | Reviewer ≠ tác giả |

@@ -70,6 +70,7 @@ Provider phụ (registry có sẵn spec, tắt mặc định): **Cursor CLI** (`
 1. **Review chéo & critique thật sự đa mô hình:** policy mặc định khi hệ có ≥ 2 providers → nâng `reviewer_must_differ = "provider"`; critique fan-out ưu tiên phủ Claude + GPT + Gemini trước khi lặp cùng provider (Plan 07 §6 — "bất đồng là tín hiệu").
 2. **Reasoner qua CLI worker (tùy chọn, tiết kiệm API cost):** `reasoner_provider = "cli-worker"` — recheck/critique-tổng-hợp route thành job L3 chạy trên subscription thay vì gọi API reasoner. Trade-off: latency cao hơn, không streaming; phù hợp nightly distillation/consolidation. Embedding/classifier **vẫn bắt buộc Ollama** (không CLI nào làm embedding).
 3. **Cost visibility:** mỗi spawn ghi provider + duration vào `agent_activities`; dashboard hiển thị usage per provider để user cân đối hạn mức subscription (rate limit của Claude Max / ChatGPT Pro là tài nguyên thật).
+4. **Rate-limit awareness & cross-provider failover (Plan 03 §5):** bảng `provider_status` (server.db) ghi `rate_limited_until` per máy/provider — nguồn: agent tự khai khi `handover(reason="rate_limit")` hoặc stderr parser khi L2/L3 worker exit (mở rộng C4). Trong cooldown: plan_team/auto-staffing/delegation **không giao việc** cho provider đó; task đang dở được handover sang provider khác (kịch bản chuẩn: Claude limit → agy tiếp quản); hết cooldown → provider tự trở lại pool. Dashboard hiển thị cooldown còn lại.
 
 ## 6. Trình tự Triển khai (Step-by-Step)
 

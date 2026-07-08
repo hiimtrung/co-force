@@ -3,7 +3,7 @@
 **Status:** Approved baseline — 2026-07-08 (v2, thay thế hoàn toàn bản phased-MVP cùng ngày)
 **Vai trò:** Master plan cho **một release duy nhất, đầy đủ tính năng, product-ready**. Không có MVP trung gian. Khi có xung đột với plan khác, file này thắng.
 
-*Tham chiếu:* `docs/architecture.md` (kiến trúc chốt), `docs/plans/01–09` (08 = provider CLI integration subscription-first; 09 = agent operating protocol — onboarding & hành vi đồng nhất), `docs/review_findings.md` (§6 — điều chỉnh định hướng)
+*Tham chiếu:* `docs/architecture.md` (kiến trúc chốt), `docs/plans/01–10` (08 = provider CLI subscription-first; 09 = agent operating protocol; 10 = solo orchestration & team bootstrap), `docs/review_findings.md` (§6 — điều chỉnh định hướng)
 
 ---
 
@@ -27,13 +27,13 @@
 ### 2.1 Năng lực chính
 1. **Coordination đầy đủ:** check-in/identity, task lifecycle mở rộng (§Plan 07), file locks + conflict, delegation, activity stream, shared contexts, dynamic AGENTS.md.
 2. **Quality Engine (Plan 07 — trái tim sản phẩm):** role system, quality policy per workspace, review chéo bắt buộc, server-side recheck bằng LLM, verification evidence, critique fan-out, quality metrics.
-3. **A2A hai chiều:** messaging + inbox + long-poll `wait_events`, spawn sub-agent, handover, auto-staffing vai trò thiếu.
+3. **A2A hai chiều:** messaging + inbox + long-poll `wait_events`, spawn sub-agent, handover, auto-staffing vai trò thiếu; **solo orchestration** (Plan 10) — 1 agent + backlog lớn → tự đôn làm PM, `plan_team` estimate dev/reviewer/qa/ba, spawn subagents với context hẹp chống hallucinate, race-safe trên cùng máy.
 4. **Agentic RAG (Plan 04):** semantic memory/knowledge/skill, agentic chunking, embedding cache, re-embed queue (resilience, không phải degrade), memory consolidation nightly.
 5. **Server hạ tầng (Plan 06):** installer một lệnh, cloudflared tunnel, auth token, systemd + watchdog, backup/restore, health/alerting, dashboard ops.
 6. **Client onboarding (Plan 05):** enrollment one-liner từ dashboard, tự cấu hình Claude Code / **Codex CLI** / **Antigravity CLI (agy)** / Cursor / Windsurf / Copilot (spec per CLI: Plan 08), rule injection theo **Agent Operating Protocol (Plan 09)** — điểm khởi đầu check_in, bản đồ tool, hành vi đồng nhất qua 4 lớp enforce.
 7. **Dashboard web** (embedded, cùng port): agent status realtime, kanban, review queue, memory browser, quality metrics, quản trị token/enrollment.
 
-### 2.2 MCP Tools (38 tools — bảng đầy đủ tại URD Appendix B + Plan 07 §5)
+### 2.2 MCP Tools (39 tools — bảng đầy đủ tại architecture §6.4)
 
 | Nhóm | Tools |
 | :--- | :--- |
@@ -41,7 +41,7 @@
 | Task (7) | create_tasks, list_tasks, update_task, approve_tasks, recheck_tasks, delegate_task, submit_verification |
 | Locks (3) | lock_files, unlock_files, check_conflicts |
 | Awareness (4) | list_agents, workspace_status, get_agent_context, get_workspace_activity |
-| Messaging/A2A (6) | send_message, respond_message, wait_events, share_context, spawn_agent, handover |
+| Messaging/A2A (7) | send_message, respond_message, wait_events, share_context, spawn_agent, handover, plan_team |
 | Quality (4) | request_review, submit_review, request_critique, submit_critique |
 | RAG (7) | store_memory, recall, classify, create_skill, list_skills, get_skill, consolidate_memory |
 | Config/Admin (4) | config, register_role, quality_policy, health |
@@ -71,7 +71,7 @@ graph LR
 
 ### WS-A — Domain & Database (Plan 01) · ~1.5 tuần
 - Strong types, enums (thêm các status/bảng mới của Plan 07: `agent_messages`, `reviews`, `critiques`, `quality_policies`, `verification_records`)
-- Migrations cho **2 tầng DB** (F-17): `server.db` cấp server (`api_tokens`, `workspaces` registry, `audit_log` — auth tra trước khi biết workspace) + DB per-workspace (12 bảng nghiệp vụ), `memory_entries.embedding BLOB`, index cho hot paths (locks by ws+path, messages by target+undelivered, activities by ws+time)
+- Migrations cho **2 tầng DB** (F-17): `server.db` cấp server (`api_tokens`, `workspaces` registry, `audit_log`, `provider_status` — cooldown rate-limit per máy/provider) + DB per-workspace (13 bảng nghiệp vụ, gồm `handovers` — Plan 03 §5.6), `memory_entries.embedding BLOB`, index cho hot paths (locks by ws+path, messages by target+undelivered, activities by ws+time)
 - Repository traits + Sqlite impls + integration tests in-memory
 - **DoD:** `cargo test` xanh; mọi bảng có repo + test CRUD; migration chạy idempotent.
 
@@ -80,7 +80,7 @@ graph LR
 - Axum router hợp nhất: `/mcp` (MCP) + `/api` (dashboard REST) + `/dashboard` (static) + `/healthz` + `/setup` (enrollment script) — **một port duy nhất**
 - Auth middleware (tower layer): Bearer token → identity; token hashed trong DB; rate limit per token; audit log
 - Session binding `Mcp-Session-Id` → agent record; disconnect → grace period → reclaim daemon
-- Interlocking Lớp 3 (`CHECK_IN_REQUIRED` + `recovery_action` + `protocol_next_step` trong mọi response); 38 tool descriptions theo chuẩn Plan 09 §3 (Lớp 2)
+- Interlocking Lớp 3 (`CHECK_IN_REQUIRED` + `recovery_action` + `protocol_next_step` trong mọi response); 39 tool descriptions theo chuẩn Plan 09 §3 (Lớp 2)
 - **DoD:** 2 client thật (Claude Code + Cursor) connect qua HTTPS công khai với token, check-in/lock/conflict hoạt động; request không token bị 401; token revoke có hiệu lực ngay.
 
 ### WS-C — Quality Engine & A2A Messaging (Plan 07) · ~2.5 tuần — **critical path**
@@ -102,7 +102,10 @@ graph LR
 ### WS-E — Active Orchestration (Plan 03) · ~1.5 tuần
 - Event bus; doc generator (AGENTS.md managed block, debounce); provider registry trong config (**Plan 08** — spec verified cho claude/codex/agy/cursor-agent, template lệnh, `max_spawn_depth`, budget flags, auth probes); ProcessManager (spawn/reap/kill, log ra activity)
 - Handover flow; auto-staffing: quality policy thiếu reviewer → server spawn agent role reviewer
-- **DoD:** handover thật giữa 2 provider CLI; spawn có depth limit; kill từ dashboard hoạt động.
+- Solo orchestration (Plan 10): `plan_team` heuristic + reasoner, solo nudge, stall detector, local worktrees option, playbook PM
+- **DoD bổ sung:** kịch bản Plan 10 §8.7 pass — 1 agent agy + 8 tasks → tự bootstrap team 3 subagents, đủ gates, không race
+- Cross-provider handover (Plan 03 §5): package validated + lock escrow + provider cooldown + re-dispatch khi client chết
+- **DoD:** handover thật giữa 2 provider CLI — kịch bản chuẩn "Claude chạm rate limit → agy tiếp quản cùng feature, không rơi gate" (chủ động + bị động kill -9); spawn có depth limit; kill từ dashboard hoạt động.
 
 ### WS-F — Server Deployment & Ops (Plan 06) · ~1.5 tuần (song song từ sớm)
 - Installer `co-force-server install` (hoặc install.sh): binary, user hệ thống, Ollama + pull 3 models, cloudflared tunnel + DNS, systemd units + hardening, backup timer, secrets

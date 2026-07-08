@@ -11,7 +11,7 @@
 Tầng này đóng vai trò xử lý logic nghiệp vụ thông qua các **Use Case Classes/Structs** (Clean Architecture) và bộc lộ (expose) các tools đó cho client AI Agents thông qua giao thức MCP (Model Context Protocol).
 
 *Tài liệu tham chiếu:*
-- `architecture.md` §6 (response envelope, error codes, catalog 38 tools)
+- `architecture.md` §6 (response envelope, error codes, catalog 39 tools)
 - `URD.md` (Appendix B: MCP Tool Signatures)
 
 ---

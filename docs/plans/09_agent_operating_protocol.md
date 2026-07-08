@@ -15,7 +15,7 @@ Một agent mới mở phiên không biết gì về Co-Force. Nó "học" proto
 | # | Điểm chạm | Khi nào | Agent nhận được gì |
 | :- | :--- | :--- | :--- |
 | 1 | **Rules file** (`AGENTS.md`/`CLAUDE.md`/`.cursorrules` — managed block §2, enrollment script tiêm) | Client tự nạp vào system context khi mở project | Điểm khởi đầu (check_in), vòng đời task, quy tắc hành vi, bản đồ tool §2.4 |
-| 2 | **Tool descriptions** (Lớp 2 — §3) | Khi client nạp danh sách 38 tools từ server | Mỗi tool tự nói khi nào PHẢI dùng nó ("MANDATORY: call first...") |
+| 2 | **Tool descriptions** (Lớp 2 — §3) | Khi client nạp danh sách 39 tools từ server | Mỗi tool tự nói khi nào PHẢI dùng nó ("MANDATORY: call first...") |
 | 3 | **`co_force_check_in` response** | Tool call đầu tiên của phiên | Pending tasks + team online + inbox tồn + `protocol_next_step` + `onboarding: true` lần đầu → được dẫn tới `co_force_guide()` |
 | 4 | **Mọi tool response sau đó** (envelope §6.2 architecture) | Suốt phiên | `protocol_next_step` chỉ hành động kế tiếp, `inbox` đẩy việc team, error + `recovery_action` tự sửa sai |
 
@@ -70,12 +70,23 @@ draft → spec_review (auto LLM recheck) → awaiting_approval (USER approves)
 - On ANY tool error: perform its `recovery_action` verbatim.
   SERVICE_UNAVAILABLE → wait `retry_after_secs`, retry; ops is already
   alerted. Do NOT work around the server or lower quality to proceed.
-- Running low on context? `co_force_handover` with a state summary
-  (commit + push WIP branch first when possible). Never silently abandon work.
+- Running low on context, OR you see the FIRST rate-limit warning from your
+  harness? Do not start anything new: commit + push WIP, then
+  `co_force_handover` with a complete package (done/remaining, decisions,
+  gotchas, next steps) — another agent (possibly a different provider)
+  continues from it. Never silently abandon work.
+- Write short progress notes via `co_force_update_task` as you work — if you
+  die unexpectedly (hard rate limit, crash), that journal IS the handover.
 - Waiting on the team (e.g., you are a reviewer on duty)? Loop
   `co_force_wait_events` instead of ending your session.
 - Store durable, non-obvious learnings with `co_force_store_memory` when a
   task completes.
+- SOLO RULE: if check_in shows you are the ONLY agent online
+  (`team_context.solo: true`) and the work spans more than ~3 tasks, do NOT
+  do everything yourself — a bloated context degrades your quality. Register
+  role `pm` (`co_force_register_role`), call `co_force_plan_team`, confirm
+  the estimate with the user, then spawn the recommended subagents. While
+  the team runs, you coordinate — you do not code.
 
 ## Which tool, when (quick map)
 | Situation | Call |
@@ -88,7 +99,8 @@ draft → spec_review (auto LLM recheck) → awaiting_approval (USER approves)
 | Asked to review | read the code, run tests yourself, `submit_review` with findings |
 | Big design decision | `request_critique` BEFORE coding |
 | Need help / spawn worker | `delegate_task` / `co_force_spawn_agent` |
-| Context nearly full | `handover` |
+| Solo with a big backlog | `register_role(pm)` → `plan_team` → spawn team |
+| Context nearly full / rate-limit warning | push WIP → `handover` (package đầy đủ) |
 | Learned something durable | `store_memory` |
 | Who is doing what | `list_agents` / `workspace_status` / `whoami` |
 
@@ -126,7 +138,7 @@ Server render theo trạng thái workspace thật (không phải markdown tĩnh)
 | `developer` | check_in → recall → (claim task approved hoặc create_tasks) → lock → code → submit_verification → xử lý findings → store_memory |
 | `reviewer` (kể cả worker L3) | check_in(role=reviewer) → `wait_events` loop → nhận review_request (kèm assist checklist) → đọc code thật (worktree/workspace) → tự chạy test độc lập → submit_review(findings có file/line/severity) → quay lại wait_events |
 | `critic` | nhận critique_request → submit_critique(position, arguments, risks, alternatives) — phản biện thật, không lịch sự xã giao |
-| `pm`/`architect` | create_tasks + request_critique trước quyết định lớn; không tự approve |
+| `pm`/`architect` | create_tasks + request_critique trước quyết định lớn; không tự approve. **PM solo-bootstrap (Plan 10):** plan_team → trình user estimate → spawn subagents → vòng lặp giám sát `wait_events` (xử lý stall/respawn, gom câu hỏi trình user 1 lần) — **không code khi team đang chạy** |
 
 ## 6. Ma trận "hành vi đồng nhất" — mỗi quy tắc được lớp nào ép
 
@@ -148,7 +160,7 @@ Hành vi đồng nhất KHÔNG dựa vào thiện chí LLM — mỗi quy tắc t
 ## 7. Trình tự Triển khai (Step-by-Step)
 
 1. Template §2 thành file trong `workspace/protocol_templates/rules_v1.md` (kèm version constant); writer managed-block dùng chung với Plan 03/05; golden-file test render với biến mẫu.
-2. Chuẩn hóa 38 tool descriptions theo §3 (bảng description nằm cạnh handler; review chéo với template để không lệch).
+2. Chuẩn hóa 39 tool descriptions theo §3 (bảng description nằm cạnh handler; review chéo với template để không lệch).
 3. `co_force_guide` renderer (§4): input = quality policy + team snapshot + backlog; output markdown; unit test với policy khác nhau cho ra ví dụ khác nhau.
 4. Cờ `onboarding: true` trong check_in response (agent chưa từng check-in workspace này) + `protocol_next_step` trỏ guide.
 5. Playbook §5: nhúng vào guide theo role; review_request payload kèm checklist + nhắc quy trình reviewer.

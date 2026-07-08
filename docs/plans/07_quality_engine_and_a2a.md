@@ -25,6 +25,8 @@ Khi task tới gate cần role chưa có agent online đảm nhận:
 2. Không có → **spawn** agent mới với role đó qua **Lane 3 worker pool** — headless trên server, đọc code từ git worktree (architecture.md §5.3; provider registry **Plan 08**, ưu tiên **provider/model KHÁC** với agent tác giả để tăng diversity phản biện — với 3 subscription CLIs (Claude/Codex/agy) diversity picker phủ Anthropic ↔ OpenAI ↔ Google trước khi lặp cùng provider).
 3. Không spawn được → task đứng ở gate + banner dashboard + alert. **Không bao giờ tự bỏ qua gate.**
 
+**Nhánh solo (Plan 10):** khi workspace chỉ có 1 agent và backlog vượt ngưỡng, việc staffing không chờ đến lúc kẹt gate — agent gốc được nudge đôn làm PM ngay từ đầu (`co_force_plan_team` estimate dev/reviewer/qa/ba → spawn L2 cùng máy hoặc L3 provider khác). Review chéo trong solo chạy giữa các **identity** khác nhau (`reviewer_must_differ="agent"` — hợp lệ theo validator §8); diversity mô hình bù bằng reasoner server-side + reviewer L3 provider khác nếu worker pool bật.
+
 ---
 
 ## 3. Task State Machine mở rộng (thay thế TaskStatus cũ)
@@ -169,6 +171,7 @@ Khi workspace có git remote + Worker Pool bật: server **fetch mirror và veri
 | :--- | :--- | :--- |
 | **Spec Recheck** (UC-06 nâng cấp) | task vào `spec_review` | Reasoner phân tích use cases/edge cases/security/dependency giữa các tasks → trả `gaps[], questions[]`; có gap → task về `draft` kèm câu hỏi cho user |
 | **Review Assist** | task vào `code_review` | Sinh checklist nghi vấn theo diff + spec cho reviewer (reviewer vẫn là agent — assist không thay thế) |
+| **Handover Package Validate** | `co_force_handover` | Kiểm độ đầy đủ package (remaining/next_steps/gotchas) — thiếu/mơ hồ → `HANDOVER_INCOMPLETE` chỉ rõ thiếu gì (Plan 03 §5.2); bàn giao cẩu thả bị chặn như mọi gate |
 | **Session Distillation** | task `completed` / nightly | Memories phiên → knowledge tổng quát; phát hiện skill candidates |
 | **Memory Consolidation** | nightly | Dedup (cosine > 0.92), decay entries không dùng, re-score confidence |
 | **Quality Scoring** | task `completed` | Ghi `quality_scores`: rework_cycles, findings theo severity, thời gian ở mỗi gate, review coverage |

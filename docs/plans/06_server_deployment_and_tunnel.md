@@ -245,9 +245,13 @@ require_verification_evidence = true
 critique_fanout = 2
 
 [a2a]
-max_spawn_depth = 1
+max_spawn_depth = 1                         # subagent không được spawn tiếp (Plan 10 §7)
 wait_events_max_secs = 55                   # < Cloudflare 100s timeout
 spawn_timeout_secs = 120                    # L2: chờ agent con check-in
+solo_team_threshold_tasks = 3               # solo + backlog > N → nudge plan_team (Plan 10 §2)
+max_agents_per_machine = 3                  # trần subagent L2 per máy client
+stall_timeout_secs = 900                    # in_progress không activity → báo PM
+use_local_worktrees = false                 # true → spawn L2 vào git worktree riêng (Plan 10 §5)
 
 [workers]                                   # Lane 3 worker pool (architecture.md §5.3)
 enabled = true
