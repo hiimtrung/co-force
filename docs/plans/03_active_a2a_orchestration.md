@@ -3,6 +3,12 @@
 **Status:** Ready for Implementation
 **Target:** `crates/co-force-core/src/orchestration/` và Event Bus
 
+> **⚠️ Cập nhật 2026-07-08 (v2 — mô hình production):** Trong production, server là máy remote sau cloudflared tunnel — **server không thể spawn process trên máy client**, và workspace code nằm ở client. Vì vậy spawn/handover chạy theo **mô hình 3 lane** (chốt tại `architecture.md` §5):
+> - **Lane 2 (spawn-by-directive):** `co_force_spawn_agent(placement:"local")` → server KHÔNG spawn mà trả `spawn_directive {command, env, cwd}` + scoped token; agent yêu cầu tự chạy lệnh bằng shell tool của nó. `ProcessManager` phía server chỉ validate + sinh directive + giám sát check-in của agent con (timeout 120s).
+> - **Lane 3 (server worker pool):** spawn headless TRÊN server trong **git worktree sandbox** (`/var/lib/co-force/workspaces/{wsId}/jobs/{taskId}`) từ mirror clone qua deploy key — dùng cho reviewer/critic auto-staffing và handover khi client offline. Code mẫu §4 dưới đây áp dụng cho lane này, bổ sung: fetch mirror + tạo worktree trước khi spawn, cgroup/nice limit, token budget, xóa worktree sau job.
+> - Ma trận chọn lane + luồng handover chi tiết: `architecture.md` §5.4. Handover ưu tiên: commit + push WIP branch → L3 tiếp tục.
+> - **Doc Generator (§3 bên dưới) chỉ ghi file nơi server có filesystem access:** worker worktrees (L3) và biến thể LAN. Với client remote, server **không thể** ghi `AGENTS.md`/`.cursorrules`/`session_status.json` vào workspace — state động deliver **in-band** qua response envelope (`workspace_pulse`, `inbox` — architecture.md §5.6); rules tĩnh do enrollment script ghi (Plan 05). Bản render AGENTS.md động expose tại `GET /api/workspaces/{id}/agents.md` cho dashboard.
+
 ## 1. Context & Mục Tiêu
 Đây là module cốt lõi nâng cấp Co-Force thành **Active A2A Orchestrator**. Thay vì chỉ bị động trả lời MCP requests, server có khả năng theo dõi state thay đổi (qua Event Bus), tự động sinh tài liệu định hướng (`AGENTS.md`), và chủ động đẻ nhánh (spawn) các agent mới bằng OS Process (dành cho tính năng chia việc hoặc fallback/handover).
 

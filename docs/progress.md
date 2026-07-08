@@ -15,6 +15,13 @@
 
 ## Sprint Hiện tại: Triển khai Kế hoạch Kiến trúc
 
+> **Cập nhật 2026-07-08 (v2):** Định hướng chốt bởi product owner: **một release 1.0 end-to-end product-ready, KHÔNG có MVP**; server độc lập + **cloudflared tunnel** + auth token; **Ollama bắt buộc** (không degraded mode); client setup one-liner < 60s; trung tâm sản phẩm là **Quality Engine** (review chéo, verification evidence, critique — Plan 07). Thứ tự triển khai theo workstreams WS-A…WS-I trong `docs/plans/00_roadmap.md` (Master Plan). Lưu ý cho DEV: **rmcp 2.x** (API `tool_router`/`ServerHandler`, streamable-http thay SSE), **không dùng embedvec** (vector BLOB trong SQLite).
+
+### 0. Foundation — làm workspace compile (Phase 0, ưu tiên trước tất cả)
+- `[ ]` Sửa `co-force-core/src/lib.rs` (module `db`, `workspace`, `engine`, `ollama` đang khai báo nhưng chưa có file)
+- `[ ]` Tạo `co-force-mcp/src/main.rs` tối thiểu (hiện thiếu → `cargo check` fail)
+- `[ ]` CI: cargo test + clippy -D warnings + fmt --check
+
 ### 1. Database and Domain Layer (Plan 01)
 - `[ ]` Setup Cargo.toml dependencies (serde, tokio, rusqlite, mockall)
 - `[ ]` Định nghĩa Strong Types (AgentId, TaskId, WorkspaceId...) trong `types/mod.rs`
@@ -40,11 +47,38 @@
 ### 4. Agentic RAG and LLM (Plan 04)
 - `[ ]` Định nghĩa `LlmProvider` interface
 - `[ ]` Triển khai `OllamaProvider` (reqwest `/api/embeddings`, `/api/generate`)
-- `[ ]` Viết thuật toán `agentic_chunking` (Structural Splitting & Semantic Boundary)
-- `[ ]` Tích hợp Vector Search và Fallback logic vào Memory Use Case
+- `[ ]` Viết thuật toán `agentic_chunking` (Structural Splitting; Semantic Boundary là stretch goal)
+- `[ ]` Vector Search brute-force cosine (BLOB trong SQLite, trait `VectorSearch`) + Fallback logic vào Memory Use Case
+
+### 5. Client Setup & Onboarding (Plan 05 v2 — WS-G)
+- `[ ]` Endpoint `/api/enroll`: enrollment token (TTL 24h) → agent token dài hạn per máy
+- `[ ]` Endpoint `/setup`: serve script sh/ps1 templated theo `public_url`
+- `[ ]` Script client: detect IDE, ghi `.mcp.json`/`.cursor/mcp.json` (merge, managed), rule injection quality protocol, gitignore-trước-token, verify tools/list
+- `[ ]` E2E: container sạch → one-liner → check-in thành công < 60s
+
+### 6. Server Deployment & Ops (Plan 06 — WS-F)
+- `[ ]` Bảng `api_tokens` + AuthLayer (Bearer, rate limit, audit) — làm trước, WS-B phụ thuộc
+- `[ ]` Axum router hợp nhất: /mcp + /api + /dashboard + /setup + /healthz (1 port, bind 127.0.0.1)
+- `[ ]` Installer `co-force-server install` (checkpoint/resume): Ollama + pull models + verify, cloudflared tunnel + DNS, systemd units + hardening
+- `[ ]` Health model per-component, fail-loud `SERVICE_UNAVAILABLE`, alert webhook
+- `[ ]` Backup timer + restore + upgrade path; admin CLI (token/status/backup/restore/upgrade)
+
+### 7. Quality Engine & A2A hai chiều (Plan 07 — WS-C, critical path)
+- `[ ]` Migrations: agent_messages, reviews, critiques, verification_records, quality_policies, quality_scores
+- `[ ]` Task state machine mới (pure function + unit test đầy đủ): draft → spec_review → awaiting_approval → approved → in_progress → verification → code_review → completed (+ rework/blocked/handover)
+- `[ ]` Messaging: send/respond + inbox piggyback trên mọi tool response + `wait_events` long-poll 55s
+- `[ ]` Review workflow: request/assign (separation of duties)/submit/rework + auto-staffing
+- `[ ]` Verification evidence validator + task revision tracking (chống "đã test rồi" giả)
+- `[ ]` LLM services (reasoner): spec recheck, review assist, distillation, consolidation (prompt templates có version)
+- `[ ]` Critique fan-out + tổng hợp bất đồng; quality scores + metrics API
+- `[ ]` Integration test kịch bản "3 agents như một team" (Master Plan §6.1)
 
 ---
 
 ## Log Báo cáo (Subagent Reports)
 *(Các subagent ghi chú lỗi, kết quả test, hoặc report cho Agent gốc tại đây)*
 - **[Hệ thống]**: Khởi tạo file tracking. Sẵn sàng cho PM subagent phân bổ việc.
+- **[Review 2026-07-08]**: Hoàn thành review docs tổng thể. Verified thực tế: rmcp = 2.1.0 (docs cũ ghi 0.16, Cargo.toml pin 0.1 — đã sửa lên "2"); embedvec tồn tại nhưng adoption quá thấp → loại; `gemma4:e2b` + `mxbai-embed-large` verified có trên Ollama. Tạo mới: `review_findings.md`, `architecture.md`, `plans/00_roadmap.md`, `plans/05_setup_ux_and_onboarding.md`. Khả thi tổng thể: ~85%. Cargo manifest resolve OK với rmcp 2.
+- **[Architecture v2.1 2026-07-08]**: Bổ sung 2 section còn thiếu vào `architecture.md`: **§5 Mô hình thực thi A2A production** (3 lanes: L1 interactive client / L2 spawn-by-directive — server trả lệnh, agent tự chạy vì tunnel một chiều / L3 server worker pool — headless agent trên server đọc code qua git mirror + worktree sandbox; ma trận placement; sequence end-to-end Dev↔Worker review) và **§6 MCP Tool Interface** (vòng đời kết nối, response envelope với inbox piggyback + protocol_next_step, 9 error codes chuẩn, catalog đầy đủ 38 tools). Đồng bộ Plan 03 (banner 3-lane), Plan 06 (§3.3 worker pool provisioning + config `[workers]`), Plan 07 (evidence thêm `commit_sha`). DEV lưu ý: `submit_verification` bắt buộc `commit_sha` khi workspace có git; worker không bao giờ push main.
+- **[Architecture v2.2 2026-07-08]**: Sửa 2 điểm vô lý theo feedback product owner: (1) **Server luôn headless** (bare-metal systemd hoặc **Docker Compose** — Plan 06 §2.1 mới, kèm compose file: co-force + ollama + cloudflared token-mode); Tauri là app **phía client** (crates đổi hướng thành `co-force-app`, chỉ gọi HTTPS qua tunnel). (2) **Xóa mọi luồng server-ghi-file-sang-client** (bất khả thi với tunnel một chiều): rules/config tĩnh do enrollment script ghi 1 lần; state động (locks/tasks/team/inbox) đi **in-band** qua response envelope (`workspace_pulse` + `inbox`); `session_status.json` bị bỏ trong production (chỉ còn ở LAN mode); doc-generator chỉ ghi vào worker worktrees (server FS) + serve qua `/api/workspaces/{id}/agents.md`. Lớp 4 guardrail đổi hình thái từ "file cục bộ" → "in-band state" (architecture.md §5.6). Đồng bộ: sơ đồ §1 (thêm node Enrollment, sửa luồng), §2 (client app), §3 (doc-gen), §7 (client layout chỉ còn agent.json + token), Plan 03 banner.
+- **[Direction pivot 2026-07-08 v2]**: Product owner chốt: no-MVP (1 release end-to-end), server độc lập + cloudflared, Ollama bắt buộc/không degraded mode, client one-liner, mục tiêu = chất lượng cực hạn (không phải tốc độ). Viết lại Master Plan (`00_roadmap.md` v2, 9 workstreams, ~10–12 tuần), tạo `plans/06_server_deployment_and_tunnel.md` + `plans/07_quality_engine_and_a2a.md`, viết lại `plans/05` (client < 60s), cập nhật `architecture.md` v2 + `review_findings.md` §6. Bổ sung 38 MCP tools (thêm nhóm Quality + Messaging), 6 bảng DB mới, vai trò model thứ 3 (reasoner).

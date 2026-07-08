@@ -1,8 +1,10 @@
 # Co-Force — User Requirements Document (URD)
 
-**Version:** 2.0  
-**Date:** 2026-06-26  
-**Status:** Draft — Pending Review
+**Version:** 2.1  
+**Date:** 2026-07-08  
+**Status:** Reviewed — see `docs/review_findings.md`
+
+> **⚠️ Ghi chú sau review 2026-07-08 (v2):** Một số quyết định trong tài liệu này đã được cập nhật. Khi mâu thuẫn, thứ tự ưu tiên: `docs/plans/00_roadmap.md` (Master Plan) → `docs/review_findings.md` §5–6 → `docs/architecture.md` → tài liệu này. Các thay đổi chính: rmcp 2.x + Streamable HTTP (thay SSE) · bỏ `embedvec` (vector BLOB trong SQLite) · chốt storage layout · chmod enforcement là opt-in · **một release 1.0 end-to-end, không MVP** · **server độc lập + cloudflared tunnel + auth token** (Plan 06) · **Ollama bắt buộc trên server, không có degraded mode** · **Quality Engine + A2A hai chiều là năng lực trung tâm** (Plan 07) — mục tiêu sản phẩm là chất lượng đầu ra của agents, không phải tốc độ.
 
 ---
 
@@ -505,6 +507,8 @@ Mọi thay đổi này sẽ tự động cập nhật cấu hình hoạt động
 | UC-34 | Coordination  | Workspace Activity Stream            | P1       | Medium     |
 | UC-35 | Coordination  | Cross-Agent Context Sharing          | P1       | Medium     |
 | UC-36 | Coordination  | Dynamic AGENTS.md Generation         | P0       | Medium     |
+| UC-37 | A2A           | Sub-Agent Spawning                   | P2       | High       |
+| UC-38 | A2A           | Task Handover / Fallback             | P2       | High       |
 
 ---
 
@@ -1574,7 +1578,7 @@ graph TD
 #### 1. Lớp 1: Workspace Rule Auto-Generation (Tự động tiêm luật vào Workspace)
 Khi Co-Force kết nối với một workspace (hoặc khi workspace được khởi tạo), Server sẽ tự động phát hiện môi trường/IDE đang chạy và tự động tạo hoặc bổ sung nội dung cấu hình luật cho Agent:
 - **Cursor:** Auto-generated/updated `.cursorrules` trong workspace root.
-- **Windsurf:** Auto-generated/updated `.windsufrules` trong workspace root.
+- **Windsurf:** Auto-generated/updated `.windsurfrules` trong workspace root.
 - **Claude Project CLI / Projects:** Auto-generated `.claudeproj/custom_instructions.md` hoặc `.clauderules`.
 - **Gemini / Antigravity / Co-Force Config:** Auto-generated `.agents/AGENTS.md` hoặc `.gemini/config/AGENTS.md`.
 - **GitHub Copilot:** Auto-generated `.github/copilot-instructions.md`.

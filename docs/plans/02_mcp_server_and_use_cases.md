@@ -3,6 +3,10 @@
 **Status:** Ready for Implementation
 **Target:** `crates/co-force-core/src/engine/` và `crates/co-force-mcp/`
 
+> **⚠️ Cập nhật 2026-07-08 (xem `docs/review_findings.md` F-01):** `rmcp` hiện đã là **2.x stable** — không phải 0.16 như URD. Hai hệ quả cho plan này:
+> 1. Macro `#[rmcp::server]` **không tồn tại**. API đúng của rmcp 2.x: `#[tool_router]` trên `impl`, `#[tool(description = ...)]` trên từng method, params là struct derive `serde::Deserialize + schemars::JsonSchema` bọc trong `Parameters<T>`, và implement trait `ServerHandler` (dùng `#[tool_handler]`). Tham khảo examples trong repo `modelcontextprotocol/rust-sdk`.
+> 2. **SSE transport đã bị deprecate khỏi MCP spec** — thay bằng **Streamable HTTP** (feature `transport-streamable-http-server` + `transport-streamable-http-server-session` để bind session, phục vụ Implicit Session Binding qua header `Mcp-Session-Id`). Các đoạn code mẫu bên dưới mang tính minh họa cấu trúc, khi code phải theo API thật.
+
 ## 1. Context & Mục Tiêu
 Tầng này đóng vai trò xử lý logic nghiệp vụ thông qua các **Use Case Classes/Structs** (Clean Architecture) và bộc lộ (expose) các tools đó cho client AI Agents thông qua giao thức MCP (Model Context Protocol).
 
@@ -118,16 +122,20 @@ impl CoForceMcp {
 
 ## 4. Cấu hình Transport
 MCP Server cần chạy ở 1 trong 2 chế độ (nhận tham số qua `clap` CLI arguments):
-1. **Stdio Transport:** Giao tiếp qua stdin/stdout (dành cho Claude Code chạy local).
-2. **SSE Transport:** Mở HTTP server tại `localhost:3846/sse` (Dành cho Cursor kết nối).
+1. **Stdio Transport** (`transport-io`): Giao tiếp qua stdin/stdout — dành cho single-agent hoặc client không nói HTTP.
+2. **Streamable HTTP Transport** (`transport-streamable-http-server`): HTTP server tại `127.0.0.1:3846/mcp` — **chế độ mặc định** (nhiều agent chia sẻ 1 server, có session binding qua `Mcp-Session-Id`). Đây là transport thay thế SSE đã bị deprecate.
 
 ```rust
-// Trong main.rs
-let server = CoForceMcp { /* init use cases */ };
-if args.transport == "sse" {
-    rmcp::transport::sse::run_server(server, args.port).await;
-} else {
-    rmcp::transport::stdio::run_server(server).await;
+// Trong main.rs (minh họa — theo API rmcp 2.x: serve_server + StreamableHttpService)
+match args.transport {
+    Transport::Stdio => {
+        let service = CoForceMcp::new(/* use cases */);
+        rmcp::serve_server(service, rmcp::transport::io::stdio()).await?;
+    }
+    Transport::Http { addr } => {
+        // StreamableHttpService mount vào axum Router tại /mcp,
+        // cùng listener phục vụ luôn /dashboard (quyết định F-13)
+    }
 }
 ```
 

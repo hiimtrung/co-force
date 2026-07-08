@@ -3,6 +3,12 @@
 **Status:** Ready for Implementation
 **Target:** `crates/co-force-core/src/llm/`
 
+> **⚠️ Cập nhật 2026-07-08 (xem `docs/review_findings.md` F-02):** **Không dùng crate `embedvec`** (adoption quá thấp ~1.3k downloads). Quyết định chốt:
+> - Embedding lưu dạng **BLOB trong bảng `memory_entries`** của SQLite; search bằng **brute-force cosine** trong Rust (< 10ms với vài nghìn entries × 1024d).
+> - Che sau trait `VectorSearch` — khi workspace vượt ~50k entries, nâng cấp lên `sqlite-vec` (cùng file DB) hoặc `hnsw_rs` mà không đổi use case.
+> - Hệ quả: không còn index file riêng → UC-30 (Vector DB corruption recovery) bị loại khỏi scope.
+> - Bước 5 trong "Trình tự Triển khai" bên dưới đọc theo quyết định này.
+
 ## 1. Context & Mục Tiêu
 Tính năng RAG (Retrieval-Augmented Generation) và phân loại dữ liệu (Classification) của Co-Force dựa hoàn toàn vào Local LLMs (Ollama) nhằm bảo mật code dự án. Module này thiết kế thuật toán **Agentic Chunking**, giải quyết nhược điểm của fixed-size chunking truyền thống (làm rách logic của code).
 

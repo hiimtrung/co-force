@@ -3,6 +3,13 @@
 
 This guide covers the Rust development workflow, environment setup, TDD approach, and running the Co-Force MCP Server.
 
+> **⚠️ Cập nhật 2026-07-08:** Tài liệu này có một số điểm đã được review sửa lại — nguồn sự thật:
+> - **Versions:** theo root `Cargo.toml` (rmcp **2.x**, rusqlite 0.32, tokio-rusqlite 0.6 — không phải rmcp 0.16 như các đoạn bên dưới).
+> - **Transport:** SSE đã bị deprecate khỏi MCP spec → dùng **Streamable HTTP** (`/mcp` endpoint). Các lệnh `--transport sse` bên dưới đọc thành `--http`.
+> - **Kiến trúc & storage layout:** theo `docs/architecture.md`. **Setup UX:** theo `docs/plans/05_setup_ux_and_onboarding.md` (Ollama là optional — mục 2.2 không còn là prerequisite bắt buộc).
+> - **Vector store:** không dùng `embedvec`; embedding lưu BLOB trong SQLite (xem `docs/review_findings.md` F-02).
+> - Macro `#[rmcp::server]` trong Section 6 là minh họa cũ; API thật của rmcp 2.x là `#[tool_router]`/`#[tool]`/`ServerHandler`.
+
 ---
 
 ## 1. Workspace & Crate Structure
@@ -369,25 +376,25 @@ cargo run -p co-force-mcp -- --transport sse --port 3846
 
 ### 4.2 Configure Claude CLI / Cursor to use Co-Force MCP
 
-**Claude CLI (`~/.claude/claude_desktop_config.json`):**
+**Claude Code — project scope (`<project>/.mcp.json`, do `co-force init` tự sinh):**
 ```json
 {
   "mcpServers": {
     "co-force": {
-      "command": "/path/to/co-force-mcp",
-      "args": ["--transport", "stdio"],
-      "env": {}
+      "type": "http",
+      "url": "http://127.0.0.1:3846/mcp"
     }
   }
 }
 ```
+(Hoặc stdio: `claude mcp add co-force -- co-force serve --stdio`. Lưu ý: `claude_desktop_config.json` là của Claude **Desktop**, không phải Claude Code.)
 
-**Cursor / Windsurf / other IDEs (SSE transport):**
+**Cursor (`.cursor/mcp.json`) / Windsurf / other IDEs (Streamable HTTP):**
 ```json
 {
   "mcpServers": {
     "co-force": {
-      "url": "http://localhost:3846/sse"
+      "url": "http://127.0.0.1:3846/mcp"
     }
   }
 }

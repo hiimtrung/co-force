@@ -27,9 +27,22 @@ tokio = { version = "1", features = ["full"] }
 # HTTP client (for Ollama)
 reqwest = { version = "0.12", features = ["json"] }
 
-# MCP
-rmcp = { version = "0.1", features = ["server", "transport-io"] }
+# MCP (rmcp 2.x — SSE transport đã bị loại khỏi MCP spec, dùng streamable HTTP)
+rmcp = { version = "2", features = [
+    "server",
+    "macros",
+    "transport-io",
+    "transport-streamable-http-server",
+    "transport-streamable-http-server-session",
+] }
 schemars = "1.0"
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# Testing
+mockall = "0.13"
+async-trait = "0.1"
 
 # Utilities
 uuid = { version = "1", features = ["v4", "serde"] }
