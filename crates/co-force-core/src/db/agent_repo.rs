@@ -51,9 +51,7 @@ impl AgentRepository for SqliteAgentRepo {
             .call(move |conn| {
                 let mut stmt = conn.prepare(&format!("{SELECT_AGENT_COLS} WHERE agent_id = ?1"))?;
 
-                let agent = stmt
-                    .query_row([id.as_ref()], row_to_agent)
-                    .optional()?;
+                let agent = stmt.query_row([id.as_ref()], row_to_agent).optional()?;
 
                 Ok(agent)
             })

@@ -6,6 +6,9 @@ pub mod activity_repo;
 pub mod agent_repo;
 pub mod context_repo;
 pub mod helpers;
+pub mod lock_repo;
+pub mod task_repo;
+pub mod handover_repo;
 
 use anyhow::{Context, Result};
 use tokio_rusqlite::Connection;
@@ -13,6 +16,7 @@ use tracing::{info, warn};
 
 /// The initial per-workspace migration SQL (embedded at compile time).
 const MIGRATION_001: &str = include_str!("migrations/001_initial.sql");
+const MIGRATION_002: &str = include_str!("migrations/002_handover.sql");
 
 /// Wraps a `tokio_rusqlite::Connection` and provides migration support.
 #[derive(Clone)]
@@ -67,8 +71,16 @@ impl Database {
                     conn.execute_batch(MIGRATION_001)?;
                     conn.pragma_update(None, "user_version", 1)?;
                     info!("Migration 001 applied successfully. Schema version = 1");
-                } else {
-                    info!("Schema version = {version}, no migrations needed");
+                }
+
+                let version: i64 =
+                    conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+
+                if version < 2 {
+                    info!("Running migration 002_handover.sql ...");
+                    conn.execute_batch(MIGRATION_002)?;
+                    conn.pragma_update(None, "user_version", 2)?;
+                    info!("Migration 002 applied successfully. Schema version = 2");
                 }
 
                 Ok(())
@@ -112,7 +124,9 @@ mod tests {
             "agents",
             "embedding_cache",
             "file_locks",
+            "handovers",
             "memory_entries",
+            "provider_status",
             "shared_contexts",
             "skills",
             "tasks",
@@ -143,7 +157,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(version, 1);
+        assert_eq!(version, 2);
     }
 
     #[tokio::test]

@@ -181,6 +181,33 @@ pub struct EmbeddingCacheEntry {
     pub created_at: Option<DateTime<Utc>>,
 }
 
+// ---------------------------------------------------------------------------
+// Handover & ProviderStatus
+// ---------------------------------------------------------------------------
+
+/// Context handover packet between agents when limits or rate limits are reached.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Handover {
+    pub handover_id: String,
+    pub task_id: TaskId,
+    pub from_agent_id: AgentId,
+    pub to_agent_id: Option<AgentId>,
+    pub reason: String,
+    pub package: serde_json::Value,
+    pub provider_cooldown_until: Option<DateTime<Utc>>,
+    pub created_at: Option<DateTime<Utc>>,
+    pub accepted_at: Option<DateTime<Utc>>,
+}
+
+/// Dynamic provider status per machine.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProviderStatus {
+    pub machine_id: String,
+    pub provider: String,
+    pub rate_limited_until: Option<DateTime<Utc>>,
+    pub last_error: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

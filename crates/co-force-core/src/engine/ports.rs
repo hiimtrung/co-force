@@ -11,7 +11,7 @@ use async_trait::async_trait;
 
 use crate::types::{
     Agent, AgentActivity, AgentId, ContextId, FileLock, SharedContext, Task, TaskId, TaskStatus,
-    WorkspaceId,
+    WorkspaceId, Handover,
 };
 
 // ---------------------------------------------------------------------------
@@ -137,3 +137,40 @@ pub trait LockRepository: Send + Sync {
         agent_id: &AgentId,
     ) -> Result<()>;
 }
+
+// ---------------------------------------------------------------------------
+// HandoverRepository
+// ---------------------------------------------------------------------------
+
+/// Operations on agent handover records.
+#[cfg_attr(test, mockall::automock)]
+#[async_trait]
+pub trait HandoverRepository: Send + Sync {
+    async fn insert_handover(&self, handover: &Handover) -> Result<()>;
+    async fn find_handover(&self, handover_id: &str) -> Result<Option<Handover>>;
+    async fn find_pending_for_task(&self, task_id: &TaskId) -> Result<Option<Handover>>;
+    async fn update_handover(&self, handover: &Handover) -> Result<()>;
+}
+
+// ---------------------------------------------------------------------------
+// ProviderStatusRepository
+// ---------------------------------------------------------------------------
+
+/// Operations on machine/provider limits and cooldown tracking.
+#[cfg_attr(test, mockall::automock)]
+#[async_trait]
+pub trait ProviderStatusRepository: Send + Sync {
+    async fn set_cooldown(
+        &self,
+        machine_id: &str,
+        provider: &str,
+        until: chrono::DateTime<chrono::Utc>,
+        error: Option<String>,
+    ) -> Result<()>;
+    async fn get_cooldown(
+        &self,
+        machine_id: &str,
+        provider: &str,
+    ) -> Result<Option<chrono::DateTime<chrono::Utc>>>;
+}
+

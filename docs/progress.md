@@ -31,19 +31,19 @@
 - `[x]` Define Repository Traits (AgentRepository, LockRepository...) in `engine/ports.rs`
 
 ### 2. MCP Server and Use Cases (Plan 02)
-- `[ ]` Implement `CheckInUseCase` (TDD, Unit Test first)
-- `[ ]` Implement `LockFilesUseCase`
-- `[ ]` Setup `co-force-mcp/src/main.rs` with `CoForceMcp` struct
-- `[ ]` Register tool handlers (rmcp 2.x: `#[tool_router]` + `#[tool]` + `ServerHandler`)
-- `[ ]` Configure Transport Layer (stdio / streamable-http) based on CLI args
+- `[x]` Implement `CheckInUseCase` (TDD, Unit Test first)
+- `[x]` Implement `LockFilesUseCase`
+- `[x]` Setup `co-force-mcp/src/main.rs` with `CoForceMcp` struct
+- `[x]` Register tool handlers (rmcp 2.x: `#[tool_router]` + `#[tool]` + `ServerHandler`)
+- `[x]` Configure Transport Layer (stdio / streamable-http) based on CLI args
 
 ### 3. Active A2A Orchestration (Plan 03)
-- `[ ]` Initialize In-Memory Event Bus (`tokio::sync::broadcast`)
-- `[ ]` Write Dynamic AGENTS.md Generator (`doc_generator.rs`)
-- `[ ]` Write Process Manager (`process_mgr.rs`) to spawn OS commands
-- `[ ]` Implement `co_force_spawn_agent` tool
-- `[ ]` Implement `co_force_handover` tool — **cross-provider according to Plan 03 §5**: `handovers` table + package validator (reasoner) + atomic lock escrow transition + `HANDOVER_INCOMPLETE`
-- `[ ]` Provider cooldown (`provider_status` in server.db) + stderr rate-limit parser per provider; staffing/delegation avoiding providers currently limited
+- `[x]` Initialize In-Memory Event Bus (`tokio::sync::broadcast`)
+- `[x]` Write Dynamic AGENTS.md Generator (`doc_generator.rs`)
+- `[x]` Write Process Manager (`process_mgr.rs`) to spawn OS commands
+- `[x]` Implement `co_force_spawn_agent` tool
+- `[x]` Implement `co_force_handover` tool — **cross-provider according to Plan 03 §5**: `handovers` table + package validator (reasoner) + atomic lock escrow transition + `HANDOVER_INCOMPLETE`
+- `[x]` Provider cooldown (`provider_status` in server.db) + stderr rate-limit parser per provider; staffing/delegation avoiding providers currently limited
 - `[ ]` Extended Reclaim: auto-redispatch to another provider + package server aggregated from activity journal
 - `[ ]` Integration test standard scenario: claude rate_limit → handover → agy takes over (active + passive kill -9), no gate drops
 
@@ -115,3 +115,7 @@
 - **[Review v2.3 2026-07-08]**: Third review cycle finding remaining impossibilities — 9 new findings (F-16...F-24, details in `review_findings.md` §7). 3 critical 🔴 fixes in docs: (1) Docker Compose bound 127.0.0.1 → cloudflared cannot reach (Plan 06 §2.1: bind 0.0.0.0 in container, isolate with compose network); (2) `api_tokens` cannot live in DB per-workspace because auth runs before knowing workspace → added server-level `server.db` (architecture §7, Plan 06 §4.1, WS-A); (3) token env-expansion mechanism via `.mcp.json` does not work (env var ≠ file) + per-machine token must not be in project commit files → moved to machine-scope config (`claude mcp add -s local`, `~/.cursor/mcp.json` — Plan 05 §3). 🟡 fixed: Plan 04 uses `/api/embed` (deprecated old endpoint) + finalized tool behavior when LLM is down per N2; state machine adds exits for `blocked`/`pending_handover`, reject for `awaiting_approval`, adds `cancelled` (Plan 07 §3); revision tracking redefined by server-observed events + verify `commit_sha` in mirror (Plan 07 §5.1); validate `reviewer_must_differ="provider"` policy when set to avoid gate deadlock (Plan 07 §8). 🟢: cleaned old APIs in sample Plan 02/03, progress.md; `wait_events` defaults to 25s due to client-side tool-call timeout.
 - **[Direction pivot 2026-07-08 v2]**: Product owner finalized: no-MVP (1 release end-to-end), independent server + cloudflared, Ollama mandatory/no degraded mode, client one-liner, goal = ultimate quality (not speed). Rewrote Master Plan (`00_roadmap.md` v2, 9 workstreams, ~10–12 weeks), created `plans/06_server_deployment_and_tunnel.md` + `plans/07_quality_engine_and_a2a.md`, rewrote `plans/05` (client < 60s), updated `architecture.md` v2 + `review_findings.md` §6. Added 39 MCP tools (added Quality + Messaging groups), 6 new DB tables, 3rd model role (reasoner).
 - **[Database and Domain Layer 2026-07-08]**: PM/DEV/TEST/QA completed all objectives for Plan 01. Setup dependencies, defined Strong Types (AgentId, TaskId, WorkspaceId...) and Enums/Structs. Implemented schema & migrations in SQLite (001_initial.sql) and Repository traits in ports.rs. Built concrete repository implementations using `tokio-rusqlite` for async sqlite, resolved all datetime parsing constraints and FK dependencies in test logic. Formatted codebase and fixed clippy linter warnings (cargo fmt and cargo clippy are 100% clean). All 49 unit and integration tests passed successfully.
+- **[MCP Server and Use Cases Layer 2026-07-13]**: PM/DEV/TEST/QA completed all objectives for Plan 02. Implemented concrete `SqliteTaskRepo` and `SqliteLockRepo` to cover repository gaps. Implemented all core use cases (`CheckInUseCase`, `LockFilesUseCase`, `GetAgentContextUseCase`, `ShareContextUseCase`) with robust unit tests following TDD. Built the `co-force-mcp` standalone binary server using `rmcp 2.x` with support for both stdio and HTTP/Axum/SSE transport. Embedded the unified `ResponseEnvelope` wrapping success and failure variants (returning protocol-level errors inside `CallToolResult` blocks so the LLM can self-correct) and thread-safe session tracking. Verified all 60 workspace-wide unit/integration tests and clippy/formatting checks pass cleanly. Stdio transport was manually verified via JSON-RPC.
+- **[Active A2A Orchestration Layer 2026-07-13]**: PM/DEV/TEST/QA completed all core objectives for Plan 03 (WS-E). PM analyzed the requirements, broke down the workflow, and logged the tasks. DEV implemented the `WorkspaceEventBus` broadcaster, `run_doc_generator` background task, `ProcessManager` spawner, and use cases `HandoverUseCase` and `SpawnUseCase` in Rust following TDD. TEST reviewed code, ran unit/integration tests confirming all 67 tests pass. QA audited architecture alignment, verified pedantic clippy/format checks run 100% clean, and approved integration of tools `co_force_spawn_agent` and `co_force_handover` with background doc generator loop.
+
+

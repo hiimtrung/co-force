@@ -73,7 +73,10 @@ impl ActivityRepository for SqliteActivityRepo {
                 )?;
 
                 let activities = stmt
-                    .query_map(rusqlite::params![ws_id.as_ref(), limit as i64], row_to_activity)?
+                    .query_map(
+                        rusqlite::params![ws_id.as_ref(), limit as i64],
+                        row_to_activity,
+                    )?
                     .collect::<Result<Vec<_>, _>>()?;
 
                 Ok(activities)
@@ -100,7 +103,10 @@ impl ActivityRepository for SqliteActivityRepo {
                 )?;
 
                 let activities = stmt
-                    .query_map(rusqlite::params![agent_id.as_ref(), limit as i64], row_to_activity)?
+                    .query_map(
+                        rusqlite::params![agent_id.as_ref(), limit as i64],
+                        row_to_activity,
+                    )?
                     .collect::<Result<Vec<_>, _>>()?;
 
                 Ok(activities)
