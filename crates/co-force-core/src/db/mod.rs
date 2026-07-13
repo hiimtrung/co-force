@@ -5,10 +5,13 @@
 pub mod activity_repo;
 pub mod agent_repo;
 pub mod context_repo;
+pub mod handover_repo;
 pub mod helpers;
 pub mod lock_repo;
+pub mod server_db;
 pub mod task_repo;
-pub mod handover_repo;
+
+pub use server_db::{ApiToken, ServerDatabase};
 
 use anyhow::{Context, Result};
 use tokio_rusqlite::Connection;
@@ -17,6 +20,7 @@ use tracing::{info, warn};
 /// The initial per-workspace migration SQL (embedded at compile time).
 const MIGRATION_001: &str = include_str!("migrations/001_initial.sql");
 const MIGRATION_002: &str = include_str!("migrations/002_handover.sql");
+const MIGRATION_003: &str = include_str!("migrations/003_quality.sql");
 
 /// Wraps a `tokio_rusqlite::Connection` and provides migration support.
 #[derive(Clone)]
@@ -83,6 +87,16 @@ impl Database {
                     info!("Migration 002 applied successfully. Schema version = 2");
                 }
 
+                let version: i64 =
+                    conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+
+                if version < 3 {
+                    info!("Running migration 003_quality.sql ...");
+                    conn.execute_batch(MIGRATION_003)?;
+                    conn.pragma_update(None, "user_version", 3)?;
+                    info!("Migration 003 applied successfully. Schema version = 3");
+                }
+
                 Ok(())
             })
             .await
@@ -121,15 +135,21 @@ mod tests {
 
         let expected_tables = [
             "agent_activities",
+            "agent_messages",
             "agents",
+            "critiques",
             "embedding_cache",
             "file_locks",
             "handovers",
             "memory_entries",
             "provider_status",
+            "quality_policies",
+            "quality_scores",
+            "reviews",
             "shared_contexts",
             "skills",
             "tasks",
+            "verification_records",
         ];
 
         for table in &expected_tables {
@@ -147,7 +167,7 @@ mod tests {
         // Running migrations again should not error
         db.run_migrations().await.unwrap();
 
-        // Schema version should still be 1
+        // Schema version should be 3 after all migrations
         let version: i64 = db
             .conn()
             .call(|conn| {
@@ -157,7 +177,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(version, 2);
+        assert_eq!(version, 3);
     }
 
     #[tokio::test]
@@ -201,7 +221,12 @@ mod tests {
             "idx_agents_ws",
             "idx_file_locks_ws",
             "idx_memory_ws_type",
+            "idx_msg_inbox",
+            "idx_msg_role",
+            "idx_quality_scores_ws",
+            "idx_reviews_task",
             "idx_tasks_ws_status",
+            "idx_verification_task",
         ];
 
         for idx in &expected_indexes {

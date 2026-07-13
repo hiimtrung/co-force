@@ -1,9 +1,9 @@
 //! Handover use case implementation.
 
-use std::sync::Arc;
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
 use crate::engine::ports::{ActivityRepository, HandoverRepository, TaskRepository};
 use crate::orchestration::bus::{WorkspaceEvent, WorkspaceEventBus};
@@ -67,11 +67,22 @@ impl HandoverUseCase {
 
         // 2. Validate handover package
         let package = &req.package;
-        let has_next_steps = package.get("next_steps").and_then(|v| v.as_array()).map(|a| !a.is_empty()).unwrap_or(false);
-        let has_remaining = package.get("progress").and_then(|p| p.get("remaining")).and_then(|v| v.as_array()).map(|a| !a.is_empty()).unwrap_or(false);
+        let has_next_steps = package
+            .get("next_steps")
+            .and_then(|v| v.as_array())
+            .map(|a| !a.is_empty())
+            .unwrap_or(false);
+        let has_remaining = package
+            .get("progress")
+            .and_then(|p| p.get("remaining"))
+            .and_then(|v| v.as_array())
+            .map(|a| !a.is_empty())
+            .unwrap_or(false);
 
         if !has_next_steps || !has_remaining {
-            bail!("HANDOVER_INCOMPLETE: Handover package is missing progress.remaining or next_steps");
+            bail!(
+                "HANDOVER_INCOMPLETE: Handover package is missing progress.remaining or next_steps"
+            );
         }
 
         // 3. Generate handover record
@@ -136,7 +147,9 @@ impl HandoverUseCase {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::ports::{MockActivityRepository, MockHandoverRepository, MockTaskRepository};
+    use crate::engine::ports::{
+        MockActivityRepository, MockHandoverRepository, MockTaskRepository,
+    };
     use crate::types::{Task, WorkspaceId};
 
     #[tokio::test]
@@ -212,7 +225,12 @@ mod tests {
 
         // Verify broadcast events
         let event1 = rx.recv().await.unwrap();
-        if let WorkspaceEvent::HandoverRequested { old_agent_id, task_id, next_provider } = event1 {
+        if let WorkspaceEvent::HandoverRequested {
+            old_agent_id,
+            task_id,
+            next_provider,
+        } = event1
+        {
             assert_eq!(old_agent_id, "a-1");
             assert_eq!(task_id, "t-1");
             assert_eq!(next_provider, "agy");

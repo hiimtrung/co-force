@@ -45,7 +45,8 @@ fn row_to_handover(row: &rusqlite::Row<'_>) -> Result<Handover, rusqlite::Error>
     })
 }
 
-const SELECT_HANDOVER_COLS: &str = "SELECT handover_id, task_id, from_agent_id, to_agent_id, reason, \
+const SELECT_HANDOVER_COLS: &str =
+    "SELECT handover_id, task_id, from_agent_id, to_agent_id, reason, \
      package, provider_cooldown_until, created_at, accepted_at FROM handovers";
 
 #[async_trait]
@@ -79,7 +80,8 @@ impl HandoverRepository for SqliteHandoverRepo {
         let hid = handover_id.to_string();
         self.conn
             .call(move |conn| {
-                let mut stmt = conn.prepare(&format!("{SELECT_HANDOVER_COLS} WHERE handover_id = ?1"))?;
+                let mut stmt =
+                    conn.prepare(&format!("{SELECT_HANDOVER_COLS} WHERE handover_id = ?1"))?;
                 let handover = stmt.query_row([hid], row_to_handover).optional()?;
                 Ok(handover)
             })
@@ -216,54 +218,63 @@ mod tests {
         let agent_repo = SqliteAgentRepo::new(db.conn().clone());
         let task_repo = SqliteTaskRepo::new(db.conn().clone());
 
-        agent_repo.upsert(&Agent {
-            agent_id: AgentId::from("a-1"),
-            workspace_id: WorkspaceId::from("ws-1"),
-            name: "Agent 1".to_string(),
-            role: "developer".to_string(),
-            provider: None,
-            machine_id: "test-machine".to_string(),
-            state: AgentState::Idle,
-            current_task_id: None,
-            last_seen: None,
-            created_at: None,
-        }).await.unwrap();
+        agent_repo
+            .upsert(&Agent {
+                agent_id: AgentId::from("a-1"),
+                workspace_id: WorkspaceId::from("ws-1"),
+                name: "Agent 1".to_string(),
+                role: "developer".to_string(),
+                provider: None,
+                machine_id: "test-machine".to_string(),
+                state: AgentState::Idle,
+                current_task_id: None,
+                last_seen: None,
+                created_at: None,
+            })
+            .await
+            .unwrap();
 
-        agent_repo.upsert(&Agent {
-            agent_id: AgentId::from("a-2"),
-            workspace_id: WorkspaceId::from("ws-1"),
-            name: "Agent 2".to_string(),
-            role: "developer".to_string(),
-            provider: None,
-            machine_id: "test-machine".to_string(),
-            state: AgentState::Idle,
-            current_task_id: None,
-            last_seen: None,
-            created_at: None,
-        }).await.unwrap();
+        agent_repo
+            .upsert(&Agent {
+                agent_id: AgentId::from("a-2"),
+                workspace_id: WorkspaceId::from("ws-1"),
+                name: "Agent 2".to_string(),
+                role: "developer".to_string(),
+                provider: None,
+                machine_id: "test-machine".to_string(),
+                state: AgentState::Idle,
+                current_task_id: None,
+                last_seen: None,
+                created_at: None,
+            })
+            .await
+            .unwrap();
 
-        task_repo.insert(&Task {
-            task_id: TaskId::from("t-1"),
-            workspace_id: WorkspaceId::from("ws-1"),
-            title: "Task 1".to_string(),
-            objective: None,
-            status: TaskStatus::InProgress,
-            revision: 1,
-            rework_cycle: 0,
-            assigned_agent_id: Some(AgentId::from("a-1")),
-            delegated_from_agent_id: None,
-            parent_task_id: None,
-            use_cases: None,
-            prerequisites: None,
-            verification_plan: None,
-            required_skills: None,
-            locked_files: None,
-            impact_analysis: None,
-            priority: 1,
-            created_at: None,
-            updated_at: None,
-            completed_at: None,
-        }).await.unwrap();
+        task_repo
+            .insert(&Task {
+                task_id: TaskId::from("t-1"),
+                workspace_id: WorkspaceId::from("ws-1"),
+                title: "Task 1".to_string(),
+                objective: None,
+                status: TaskStatus::InProgress,
+                revision: 1,
+                rework_cycle: 0,
+                assigned_agent_id: Some(AgentId::from("a-1")),
+                delegated_from_agent_id: None,
+                parent_task_id: None,
+                use_cases: None,
+                prerequisites: None,
+                verification_plan: None,
+                required_skills: None,
+                locked_files: None,
+                impact_analysis: None,
+                priority: 1,
+                created_at: None,
+                updated_at: None,
+                completed_at: None,
+            })
+            .await
+            .unwrap();
 
         let handover = Handover {
             handover_id: "h-1".to_string(),
@@ -281,7 +292,16 @@ mod tests {
 
         let found = repo.find_handover("h-1").await.unwrap().unwrap();
         assert_eq!(found.reason, "rate_limit");
-        assert_eq!(found.package.get("next_steps").unwrap().as_array().unwrap().len(), 1);
+        assert_eq!(
+            found
+                .package
+                .get("next_steps")
+                .unwrap()
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
 
         let mut updated = found;
         updated.to_agent_id = Some(AgentId::from("a-2"));
@@ -298,9 +318,15 @@ mod tests {
         let repo = SqliteProviderStatusRepo::new(db.conn().clone());
 
         let until = Utc::now() + chrono::Duration::minutes(30);
-        repo.set_cooldown("mach-1", "claude", until, Some("rate limit".to_string())).await.unwrap();
+        repo.set_cooldown("mach-1", "claude", until, Some("rate limit".to_string()))
+            .await
+            .unwrap();
 
-        let cool = repo.get_cooldown("mach-1", "claude").await.unwrap().unwrap();
+        let cool = repo
+            .get_cooldown("mach-1", "claude")
+            .await
+            .unwrap()
+            .unwrap();
         // compare timestamps approximately within a second due to serialization roundtrip
         assert!((cool - until).num_seconds().abs() < 2);
     }

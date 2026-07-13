@@ -21,6 +21,7 @@ tracing = { workspace = true }
 async-trait = { workspace = true }
 hostname = { workspace = true }
 sha2 = { workspace = true }
+hex = { workspace = true }
 
 [dev-dependencies]
 mockall = { workspace = true }

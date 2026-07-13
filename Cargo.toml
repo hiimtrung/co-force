@@ -57,3 +57,4 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # System info
 hostname = "0.4"
 sha2 = "0.10"
+hex = "0.4"

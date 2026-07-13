@@ -4,10 +4,10 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 use crate::engine::ports::{ActivityRepository, LockRepository};
+use crate::orchestration::bus::{WorkspaceEvent, WorkspaceEventBus};
 use crate::types::{
     ActivityId, ActivityType, AgentActivity, AgentId, FileLock, TaskId, WorkspaceId,
 };
-use crate::orchestration::bus::{WorkspaceEvent, WorkspaceEventBus};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LockFilesRequest {

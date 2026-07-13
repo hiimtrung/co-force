@@ -10,8 +10,8 @@ use anyhow::Result;
 use async_trait::async_trait;
 
 use crate::types::{
-    Agent, AgentActivity, AgentId, ContextId, FileLock, SharedContext, Task, TaskId, TaskStatus,
-    WorkspaceId, Handover,
+    Agent, AgentActivity, AgentId, ContextId, FileLock, Handover, SharedContext, Task, TaskId,
+    TaskStatus, WorkspaceId,
 };
 
 // ---------------------------------------------------------------------------
@@ -173,4 +173,3 @@ pub trait ProviderStatusRepository: Send + Sync {
         provider: &str,
     ) -> Result<Option<chrono::DateTime<chrono::Utc>>>;
 }
-

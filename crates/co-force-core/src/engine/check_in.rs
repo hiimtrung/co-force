@@ -4,10 +4,10 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 use crate::engine::ports::{ActivityRepository, AgentRepository, TaskRepository};
+use crate::orchestration::bus::{WorkspaceEvent, WorkspaceEventBus};
 use crate::types::{
     ActivityId, ActivityType, Agent, AgentActivity, AgentId, AgentState, Task, WorkspaceId,
 };
-use crate::orchestration::bus::{WorkspaceEvent, WorkspaceEventBus};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CheckInRequest {

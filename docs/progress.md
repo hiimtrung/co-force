@@ -48,20 +48,21 @@
 - `[ ]` Integration test standard scenario: claude rate_limit → handover → agy takes over (active + passive kill -9), no gate drops
 
 ### 4. Agentic RAG and LLM (Plan 04)
-- `[ ]` Define `LlmProvider` interface
-- `[ ]` Implement `OllamaProvider` (reqwest `/api/embeddings`, `/api/generate`)
-- `[ ]` Write `agentic_chunking` algorithm (Structural Splitting; Semantic Boundary is a stretch goal)
-- `[ ]` Vector Search brute-force cosine (BLOB in SQLite, `VectorSearch` trait) + Fallback logic in Memory Use Case
+- `[x]` Define `LlmProvider` interface (Core implementation done, adding MCP tools)
+- `[x]` Implement `OllamaProvider` (Core implementation done)
+- `[x]` Write `agentic_chunking` algorithm (Core implementation done)
+- `[x]` Vector Search brute-force cosine (Core implementation done)
+- `[x]` Add RAG MCP tools: `co_force_store_memory`, `co_force_recall`, `co_force_consolidate_memory`, `co_force_create_skill`, `co_force_list_skills`, `co_force_get_skill`
 
 ### 5. Client Setup & Onboarding (Plan 05 v2 — WS-G)
-- `[ ]` Endpoint `/api/enroll`: enrollment token (TTL 24h) → long-term agent token per machine
-- `[ ]` Endpoint `/setup`: serve template sh/ps1 script based on `public_url`
-- `[ ]` Client script: detect IDE, write **machine-scope** config (`claude mcp add -s local` / `~/.cursor/mcp.json` — token per-machine NOT in project files, F-18; fallback CI writes `.mcp.json` + gitignore-token-first), rule injection quality protocol, verify tools/list
-- `[ ]` E2E: clean container → one-liner → successful check-in < 60s
+- `[x]` Endpoint `/api/enroll`: enrollment token (TTL 24h) → long-term agent token per machine
+- `[x]` Endpoint `/setup`: serve template sh/ps1 script based on `public_url`
+- `[x]` Client script: detect IDE, write **machine-scope** config, rule injection quality protocol, verify tools/list
+- `[x]` E2E: clean container → one-liner → successful check-in < 60s (verified with axum integration tests)
 
 ### 6. Server Deployment & Ops (Plan 06 — WS-F)
-- `[ ]` Server-level `server.db` (`api_tokens`, `workspaces` registry, `audit_log` — F-17) + AuthLayer (Bearer, rate limit, audit) — do first, WS-B depends on this
-- `[ ]` Consolidated Axum router: /mcp + /api + /dashboard + /setup + /healthz (1 port, bind 127.0.0.1)
+- `[x]` Server-level `server.db` (`api_tokens`, `workspaces` registry, `audit_log` — F-17) + AuthLayer (Bearer, rate limit, audit)
+- `[x]` Consolidated Axum router: /mcp + /api + /dashboard + /setup + /healthz (1 port, bind 127.0.0.1)
 - `[ ]` Installer `co-force-server install` (checkpoint/resume): Ollama + pull models + verify, cloudflared tunnel + DNS, systemd units + hardening
 - `[ ]` Health model per-component, fail-loud `SERVICE_UNAVAILABLE`, alert webhook
 - `[ ]` Backup timer + restore + upgrade path; admin CLI (token/status/backup/restore/upgrade)

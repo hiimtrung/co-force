@@ -5,12 +5,29 @@ use tokio::sync::broadcast;
 /// Core events emitted by the platform and monitored by orchestration tasks.
 #[derive(Debug, Clone)]
 pub enum WorkspaceEvent {
-    AgentCheckedIn { agent_id: String, workspace_id: String },
-    FilesLocked { agent_id: String, files: Vec<String> },
-    TaskUpdated { task_id: String, new_status: String },
-    ActivityLogged { activity_id: String },
-    ContextShared { context_id: String },
-    HandoverRequested { old_agent_id: String, task_id: String, next_provider: String },
+    AgentCheckedIn {
+        agent_id: String,
+        workspace_id: String,
+    },
+    FilesLocked {
+        agent_id: String,
+        files: Vec<String>,
+    },
+    TaskUpdated {
+        task_id: String,
+        new_status: String,
+    },
+    ActivityLogged {
+        activity_id: String,
+    },
+    ContextShared {
+        context_id: String,
+    },
+    HandoverRequested {
+        old_agent_id: String,
+        task_id: String,
+        next_provider: String,
+    },
 }
 
 /// A wrapper around a tokio broadcast channel to decouple use cases and orchestration tasks.
