@@ -290,7 +290,7 @@ pub fn validate_transition(
 }
 
 /// Checks that the reviewer satisfies the differ policy.
-fn check_reviewer_policy(
+pub fn check_reviewer_policy(
     review: &ReviewSummary,
     ctx: &TransitionContext<'_>,
 ) -> Result<(), GateViolation> {

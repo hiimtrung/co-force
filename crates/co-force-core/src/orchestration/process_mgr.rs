@@ -23,49 +23,36 @@ impl ProcessManager {
         task_id: &str,
         token: &str,
         workspace_path: &str,
+        is_l3: bool,
     ) -> Result<SpawnDirective> {
-        let (command, args, env) = match provider {
-            "claude-code" | "claude" => (
-                "claude".to_string(),
-                vec!["-p".to_string(), format!("Work on task {task_id}")],
-                {
-                    let mut map = HashMap::new();
-                    map.insert("CO_FORCE_TOKEN".to_string(), token.to_string());
-                    map
-                },
-            ),
-            "antigravity" | "agy" => (
-                "agy".to_string(),
-                vec![
-                    "--task".to_string(),
-                    task_id.to_string(),
-                    "--dangerously-skip-permissions".to_string(),
-                ],
-                {
-                    let mut map = HashMap::new();
-                    map.insert("CO_FORCE_TOKEN".to_string(), token.to_string());
-                    map
-                },
-            ),
-            "codex" => (
-                "codex".to_string(),
-                vec![
-                    "exec".to_string(),
-                    "--json".to_string(),
-                    "--task".to_string(),
-                    task_id.to_string(),
-                ],
-                {
-                    let mut map = HashMap::new();
-                    map.insert("CO_FORCE_TOKEN".to_string(), token.to_string());
-                    map
-                },
-            ),
-            other => bail!("Unsupported provider: {}", other),
-        };
+        let specs = crate::orchestration::providers::ProviderSpec::defaults();
+        let spec = specs
+            .iter()
+            .find(|s| s.name == provider || s.binary_names.contains(&provider.to_string()))
+            .ok_or_else(|| anyhow::anyhow!("Unsupported provider: {}", provider))?;
+
+        if provider == "codex" && !is_l3 {
+            bail!("SPAWN_DENIED: Codex requires L3 sandbox bypass flags for headless execution.");
+        }
+
+        let prompt = format!("Work on task {task_id}");
+        let mut args = spec.render_headless_command(&prompt, workspace_path, task_id);
+
+        if is_l3 {
+            for flag in &spec.sandbox_bypass_flags {
+                args.push(flag.clone());
+            }
+        } else {
+            for flag in &spec.auto_approve_flags {
+                args.push(flag.clone());
+            }
+        }
+
+        let mut env = HashMap::new();
+        env.insert("CO_FORCE_TOKEN".to_string(), token.to_string());
 
         Ok(SpawnDirective {
-            command,
+            command: spec.binary_names[0].clone(),
             args,
             env,
             cwd: workspace_path.to_string(),
@@ -102,7 +89,7 @@ mod tests {
 
     #[test]
     fn test_build_directive() {
-        let dir = ProcessManager::build_directive("claude", "task-42", "tok-123", "/tmp").unwrap();
+        let dir = ProcessManager::build_directive("claude-code", "task-42", "tok-123", "/tmp", false).unwrap();
         assert_eq!(dir.command, "claude");
         assert_eq!(dir.env.get("CO_FORCE_TOKEN").unwrap(), "tok-123");
         assert_eq!(dir.cwd, "/tmp");

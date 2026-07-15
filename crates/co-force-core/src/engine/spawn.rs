@@ -33,11 +33,13 @@ impl SpawnUseCase {
         // Generate a child agent enrollment token
         let token = format!("tok-spawn-{}", uuid::Uuid::new_v4());
 
+        let is_l3 = req.placement == "server";
         let directive = ProcessManager::build_directive(
             &req.provider,
             &req.task_id,
             &token,
             &req.workspace_path,
+            is_l3,
         )?;
 
         if req.placement == "server" {
@@ -63,7 +65,7 @@ mod tests {
     async fn test_spawn_local_directive() {
         let usecase = SpawnUseCase::new();
         let req = SpawnRequest {
-            provider: "claude".to_string(),
+            provider: "claude-code".to_string(),
             task_id: "t-1".to_string(),
             placement: "local".to_string(),
             workspace_path: "/tmp".to_string(),

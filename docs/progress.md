@@ -44,8 +44,8 @@
 - `[x]` Implement `co_force_spawn_agent` tool
 - `[x]` Implement `co_force_handover` tool — **cross-provider according to Plan 03 §5**: `handovers` table + package validator (reasoner) + atomic lock escrow transition + `HANDOVER_INCOMPLETE`
 - `[x]` Provider cooldown (`provider_status` in server.db) + stderr rate-limit parser per provider; staffing/delegation avoiding providers currently limited
-- `[ ]` Extended Reclaim: auto-redispatch to another provider + package server aggregated from activity journal
-- `[ ]` Integration test standard scenario: claude rate_limit → handover → agy takes over (active + passive kill -9), no gate drops
+- `[x]` Extended Reclaim: auto-redispatch to another provider + package server aggregated from activity journal
+- `[x]` Integration test standard scenario: claude rate_limit → handover → agy takes over (active + passive kill -9), no gate drops
 
 ### 4. Agentic RAG and LLM (Plan 04)
 - `[x]` Define `LlmProvider` interface (Core implementation done, adding MCP tools)
@@ -68,28 +68,28 @@
 - `[ ]` Backup timer + restore + upgrade path; admin CLI (token/status/backup/restore/upgrade)
 
 ### 7. Quality Engine & Two-Way A2A (Plan 07 — WS-C, critical path)
-- `[ ]` Migrations: agent_messages, reviews, critiques, verification_records, quality_policies, quality_scores
-- `[ ]` New Task state machine (pure function + full unit tests): draft → spec_review → awaiting_approval → approved → in_progress → verification → code_review → completed (+ rework/blocked/handover)
-- `[ ]` Messaging: send/respond + inbox piggyback on all tool responses + `wait_events` long-poll 55s
-- `[ ]` Review workflow: request/assign (separation of duties)/submit/rework + auto-staffing
-- `[ ]` Verification evidence validator + task revision tracking (prevents fake "already tested")
+- `[x]` Migrations: agent_messages, reviews, critiques, verification_records, quality_policies, quality_scores
+- `[x]` New Task state machine (pure function + full unit tests): draft → spec_review → awaiting_approval → approved → in_progress → verification → code_review → completed (+ rework/blocked/handover)
+- `[x]` Messaging: send/respond + inbox piggyback on all tool responses + `wait_events` long-poll 55s
+- `[x]` Review workflow: request/assign (separation of duties)/submit/rework + auto-staffing
+- `[x]` Verification evidence validator + task revision tracking (prevents fake "already tested")
 - `[ ]` LLM services (reasoner): spec recheck, review assist, distillation, consolidation (versioned prompt templates)
 - `[ ]` Critique fan-out + dispute consolidation; quality scores + metrics API
 - `[ ]` Integration test scenario "3 agents working as a team" (Master Plan §6.1)
 
 ### 8. Provider CLI Integration (Plan 08 — assists WS-E/F/G)
-- `[ ]` `providers.rs`: Default `ProviderSpec` registry (claude/codex/agy/cursor-agent) + merge override from `server.toml [providers]` + test template rendering
-- `[ ]` Auth-status parsers per provider (C4) + health component `provider.<cli>`
-- `[ ]` Enrollment script: detect + write MCP config per CLI kind (codex toml / agy json / claude cmd), verify header (C2/C3), stdio shim fallback
+- `[x]` `providers.rs`: Default `ProviderSpec` registry (claude/codex/agy/cursor-agent) + merge override from `server.toml [providers]` + test template rendering
+- `[x]` Auth-status parsers per provider (C4) + health component `provider.<cli>`
+- `[x]` Enrollment script: detect + write MCP config per CLI kind (codex toml / agy json / claude cmd), verify header (C2/C3), stdio shim fallback
 - `[ ]` Installer: headless subscription login per CLI + spawn smoke test
-- `[ ]` L2 spawn directive builder + C1 gate (Codex exec MCP approvals); L3 sandbox bypass flags
-- `[ ]` Quality: provider-diversity picker (review/critique); option `reasoner_provider = "cli-worker"`
+- `[x]` L2 spawn directive builder + C1 gate (Codex exec MCP approvals); L3 sandbox bypass flags
+- `[x]` Quality: provider-diversity picker (review/critique); option `reasoner_provider = "cli-worker"`
 
 ### 9. Agent Operating Protocol (Plan 09 — assists WS-B/C/G)
-- `[ ]` Rules template v1 (`workspace/protocol_templates/rules_v1.md`) + managed-block writer + golden-file test render
-- `[ ]` Standardize 39 tool descriptions according to Plan 09 §3 (synced with template, cross-reviewed)
-- `[ ]` Dynamic `co_force_guide` renderer (policy + team + backlog + 3 standard examples + playbook by role)
-- `[ ]` `onboarding: true` flag in the initial check_in + `protocol_next_step` pointing to guide
+- `[x]` Rules template v1 (`workspace/protocol_templates/rules_v1.md`) + managed-block writer + golden-file test render
+- `[x]` Standardize 39 tool descriptions according to Plan 09 §3 (synced with template, cross-reviewed)
+- `[x]` Dynamic `co_force_guide` renderer (policy + team + backlog + 3 standard examples + playbook by role)
+- `[x]` `onboarding: true` flag in the initial check_in + `protocol_next_step` pointing to guide
 - `[ ]` E2E "cold agent": enroll → neutral prompt → agent auto-check_in → recall → create_tasks → wait for approval (loops with claude/codex/agy)
 
 ### 10. Solo Orchestration & Team Bootstrap (Plan 10 — assists WS-C/E)

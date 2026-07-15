@@ -316,13 +316,13 @@ impl WaitEventsUseCase {
         let tasks_at_gates = self
             .conn
             .call(move |conn| {
-                conn.query_row(
+                let count = conn.query_row(
                     "SELECT count(*) FROM tasks WHERE workspace_id = ?1 \
                      AND status IN ('spec_review', 'awaiting_approval', 'verification', 'code_review')",
                     [ws_id],
                     |row| row.get::<_, i64>(0),
                 ).map(|c| c as usize).unwrap_or(0);
-                Ok(0usize)
+                Ok(count)
             })
             .await
             .unwrap_or(0);

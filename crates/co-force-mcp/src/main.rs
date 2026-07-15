@@ -546,7 +546,26 @@ macro_rules! require_session {
         let agent_id_opt = $self.agent_id.lock().await.clone();
         let workspace_id_opt = $self.workspace_id.lock().await.clone();
         match (agent_id_opt, workspace_id_opt) {
-            (Some(aid), Some(wid)) => (aid, wid),
+            (Some(aid), Some(wid)) => {
+                let conn = $self.db_conn.clone();
+                let aid_clone = aid.clone();
+                tokio::spawn(async move {
+                    let now = chrono::Utc::now().to_rfc3339();
+                    let _ = conn
+                        .call(move |c| {
+                            let res = c.execute(
+                                "UPDATE agents SET last_seen = ?1 WHERE agent_id = ?2",
+                                rusqlite::params![now, aid_clone],
+                            );
+                            match res {
+                                Ok(_) => Ok(()),
+                                Err(e) => Err(tokio_rusqlite::Error::Rusqlite(e)),
+                            }
+                        })
+                        .await;
+                });
+                (aid, wid)
+            }
             _ => {
                 return make_error_response(
                     "CHECK_IN_REQUIRED",
@@ -566,8 +585,7 @@ impl CoForceMcp {
     // -------------------------------------------------------------------------
 
     #[tool(
-        description = "MANDATORY: Call this FIRST before any workspace action. Registers your session, \
-        receives your workspace rules (AGENTS.md), team context, and initial protocol_next_step."
+        description = "MANDATORY first call of every session. All other tools fail with CHECK_IN_REQUIRED until called. Registers your session, receives workspace rules, team context, and next steps."
     )]
     async fn co_force_check_in(&self, params: Parameters<CheckInParams>) -> CallToolResult {
         let args = params.0;
@@ -587,7 +605,12 @@ impl CoForceMcp {
 
                 let aid = res.agent_id.clone();
                 let wid = res.workspace_id.clone();
-                make_envelope_response(&self.db_conn, Some(&aid), Some(&wid), Some(res), None).await
+                let next_step = if res.onboarding_required {
+                    Some("Call co_force_guide() once before taking any task.".to_string())
+                } else {
+                    None
+                };
+                make_envelope_response(&self.db_conn, Some(&aid), Some(&wid), Some(res), next_step).await
             }
             Err(e) => make_error_response(
                 "INTERNAL_ERROR",
@@ -618,36 +641,189 @@ impl CoForceMcp {
     }
 
     #[tool(
-        description = "Returns the Co-Force protocol guide, quality gate rules, and team coordination protocol. \
-        Read this once at session start to understand mandatory behaviors."
+        description = "Returns the Co-Force protocol guide, dynamic quality policy, active team/locks, and standard examples."
     )]
     async fn co_force_guide(&self) -> CallToolResult {
+        let (_agent_id, workspace_id) = require_session!(self);
+
+        let policy_res: Option<co_force_core::quality::state_machine::QualityPolicy> = self.db_conn.call({
+            let wid = workspace_id.clone();
+            move |conn| {
+                let mut stmt = conn.prepare(
+                    "SELECT reviews_required, reviewer_must_differ, require_recheck, \
+                     require_verification_evidence, required_evidence_kinds, critique_fanout, \
+                     max_rework_cycles, definition_of_done FROM quality_policies \
+                     WHERE workspace_id = ?1"
+                )?;
+                let mut rows = stmt.query(rusqlite::params![&wid])?;
+                if let Some(row) = rows.next()? {
+                    let ev_str: String = row.get(4)?;
+                    let dod_str: String = row.get(7)?;
+                    let kinds: Vec<String> = serde_json::from_str(&ev_str).unwrap_or_default();
+                    let dod: Vec<String> = serde_json::from_str(&dod_str).unwrap_or_default();
+                    Ok(Some(co_force_core::quality::state_machine::QualityPolicy {
+                        reviews_required: row.get(0)?,
+                        reviewer_must_differ: row.get(1)?,
+                        require_recheck: row.get(2)?,
+                        require_verification_evidence: row.get(3)?,
+                        required_evidence_kinds: kinds,
+                        critique_fanout: row.get(5)?,
+                        max_rework_cycles: row.get(6)?,
+                        definition_of_done: dod,
+                    }))
+                } else {
+                    Ok(None)
+                }
+            }
+        }).await.unwrap_or(None);
+
+        let policy = policy_res.unwrap_or_else(|| co_force_core::quality::state_machine::QualityPolicy {
+            reviews_required: 1,
+            reviewer_must_differ: "agent".to_string(),
+            require_recheck: false,
+            require_verification_evidence: true,
+            required_evidence_kinds: vec!["test".to_string()],
+            critique_fanout: 0,
+            max_rework_cycles: 3,
+            definition_of_done: vec![],
+        });
+
+        let team_res = self.db_conn.call({
+            let wid = workspace_id.clone();
+            move |conn| {
+                let mut stmt = conn.prepare(
+                    "SELECT agent_id, name, role, state FROM agents \
+                     WHERE workspace_id = ?1 AND state != 'disconnected'"
+                )?;
+                let mut rows = stmt.query(rusqlite::params![&wid])?;
+                let mut agents = Vec::new();
+                while let Some(row) = rows.next()? {
+                    agents.push(serde_json::json!({
+                        "agent_id": row.get::<_, String>(0)?,
+                        "name": row.get::<_, String>(1)?,
+                        "role": row.get::<_, String>(2)?,
+                        "state": row.get::<_, String>(3)?,
+                    }));
+                }
+
+                let mut stmt_locks = conn.prepare(
+                    "SELECT file_path, agent_id FROM file_locks \
+                     WHERE workspace_id = ?1"
+                )?;
+                let mut rows_locks = stmt_locks.query(rusqlite::params![&wid])?;
+                let mut locks = Vec::new();
+                while let Some(row) = rows_locks.next()? {
+                    locks.push(serde_json::json!({
+                        "file_path": row.get::<_, String>(0)?,
+                        "held_by": row.get::<_, String>(1)?,
+                    }));
+                }
+
+                Ok((agents, locks))
+            }
+        }).await.unwrap_or((vec![], vec![]));
+        let (active_agents, active_locks) = team_res;
+
+        let backlog = self.db_conn.call({
+            let wid = workspace_id.clone();
+            move |conn| {
+                let mut stmt = conn.prepare(
+                    "SELECT task_id, title, status, assigned_agent_id FROM tasks \
+                     WHERE workspace_id = ?1 AND status IN ('approved', 'in_progress')"
+                )?;
+                let mut rows = stmt.query(rusqlite::params![&wid])?;
+                let mut tasks = Vec::new();
+                while let Some(row) = rows.next()? {
+                    tasks.push(serde_json::json!({
+                        "task_id": row.get::<_, String>(0)?,
+                        "title": row.get::<_, String>(1)?,
+                        "status": row.get::<_, String>(2)?,
+                        "assignee": row.get::<_, Option<String>>(3)?,
+                    }));
+                }
+                Ok(tasks)
+            }
+        }).await.unwrap_or(vec![]);
+
+        let examples = serde_json::json!({
+            "co_force_create_tasks": {
+                "description": "Create tasks with objective and verification plan matching the quality policy.",
+                "example_call": {
+                    "tasks": [{
+                        "title": "Implement feature X",
+                        "objective": "Add feature X supporting use cases Y and Z.",
+                        "use_cases": ["User requests X", "Server processes X"],
+                        "verification_plan": "Write unit tests and run cargo test",
+                        "required_skills": ["Rust", "SQLite"]
+                    }]
+                }
+            },
+            "co_force_submit_verification": {
+                "description": "Submit verification evidence to move task from in_progress to verification.",
+                "example_call": {
+                    "task_id": "task-123",
+                    "task_revision": 1,
+                    "evidence": [{
+                        "kind": "test",
+                        "content": "cargo test results: 12 passed, 0 failed",
+                        "exit_code": 0,
+                        "metadata": { "commit_sha": "a1b2c3d4e5f6..." }
+                    }]
+                }
+            },
+            "co_force_submit_review": {
+                "description": "Submit review verdict and findings for an assigned task.",
+                "example_call": {
+                    "task_id": "task-123",
+                    "verdict": "approved",
+                    "findings": [{
+                        "severity": "medium",
+                        "file_path": "src/lib.rs",
+                        "line_number": 42,
+                        "message": "Potential memory leak in connection pooling."
+                    }]
+                }
+            }
+        });
+
+        let common_errors = serde_json::json!({
+            "CHECK_IN_REQUIRED": {
+                "explanation": "No active session registered.",
+                "recovery_action": "Call co_force_check_in first."
+            },
+            "LOCK_CONFLICT": {
+                "explanation": "Another agent holds locks on your target files.",
+                "recovery_action": "Call co_force_check_conflicts and coordinate or wait."
+            },
+            "GATE_VIOLATION": {
+                "explanation": "Invalid task transition, e.g. trying to complete without review, or self-review.",
+                "recovery_action": "Follow task lifecycle; submit verification and request review from teammate."
+            },
+            "EVIDENCE_STALE": {
+                "explanation": "Code has been modified since the last verification submission.",
+                "recovery_action": "Re-run verification tests and call submit_verification again."
+            }
+        });
+
         let guide = serde_json::json!({
             "protocol_version": "1.0",
-            "mandatory_flow": [
-                "1. co_force_check_in → receive workspace context + protocol_next_step",
-                "2. co_force_list_tasks (status=approved) → find your task",
-                "3. co_force_lock_files → lock all files you need BEFORE editing",
-                "4. Work on task, use co_force_update_task for progress notes",
-                "5. co_force_submit_verification → with real test evidence (exit_code=0)",
-                "6. Await code review → co_force_wait_events",
-                "7. If approved: task moves to completed. If changes_requested: address and resubmit."
-            ],
-            "quality_gates": {
-                "gate_1_verification": "Must submit real test evidence with passing tests",
-                "gate_2_code_review": "Another agent must review — self-review BLOCKED",
-                "gate_3_completion": "Only after reviewer approves can task be completed"
+            "active_quality_policy": policy,
+            "current_team": {
+                "agents": active_agents,
+                "locks": active_locks
             },
-            "anti_patterns": [
-                "Do NOT modify files without locking them first",
-                "Do NOT set status=completed directly — must go through verification gate",
-                "Do NOT self-review your own work",
-                "Do NOT run git add -A or git commit -a (use explicit file paths)"
-            ]
+            "backlog": backlog,
+            "standard_examples": examples,
+            "common_errors": common_errors,
+            "playbooks": {
+                "developer": "check_in -> recall -> lock -> code -> submit_verification -> handle findings -> store_memory",
+                "reviewer": "check_in -> wait_events loop -> receives review_request -> reads code -> runs tests -> submit_review",
+                "critic": "receives critique_request -> submit_critique"
+            }
         });
 
         CallToolResult::success(vec![ContentBlock::text(
-            serde_json::to_string(&guide).unwrap_or_default(),
+            serde_json::to_string_pretty(&guide).unwrap_or_default(),
         )])
     }
 
@@ -1705,12 +1881,32 @@ CURSOR_DIR="$HOME/.cursor"
 if [ -d "$CURSOR_DIR" ]; then
     echo "Configuring Cursor..."
     mkdir -p "$CURSOR_DIR"
-    echo "{{\\"mcpServers\\":{{\\"co-force\\":{{\\"type\\":\\"http\\",\\"url\\":\\"{public_url}/mcp\\",\\"headers\\":{{\\"Authorization\\":\\"Bearer $AGENT_TOKEN\\"}}Outside repo config written.}}}}}}" > "$CURSOR_DIR/mcp.json"
+    echo "{{\"mcpServers\":{{\"co-force\":{{\"type\":\"http\",\"url\":\"{public_url}/mcp\",\"headers\":{{\"Authorization\":\"Bearer $AGENT_TOKEN\"}}}}}}}}" > "$CURSOR_DIR/mcp.json"
+fi
+
+# Codex config
+CODEX_DIR="$HOME/.codex"
+if command -v codex >/dev/null 2>&1 || [ -d "$CODEX_DIR" ]; then
+    echo "Configuring Codex..."
+    mkdir -p "$CODEX_DIR"
+    cat << EOF > "$CODEX_DIR/config.toml"
+[mcp_servers.co-force]
+command = "npx"
+args = ["-y", "mcp-remote-stdio-shim", "{public_url}/mcp", "Bearer $AGENT_TOKEN"]
+EOF
+fi
+
+# Antigravity config
+AGY_DIR="$HOME/.gemini/config"
+if command -v agy >/dev/null 2>&1 || [ -d "$HOME/.gemini" ]; then
+    echo "Configuring Antigravity..."
+    mkdir -p "$AGY_DIR"
+    echo "{{\"mcpServers\":{{\"co-force\":{{\"type\":\"http\",\"url\":\"{public_url}/mcp\",\"headers\":{{\"Authorization\":\"Bearer $AGENT_TOKEN\"}}}}}}}}" > "$AGY_DIR/mcp_config.json"
 fi
 
 # VSCode or generic local .mcp.json fallback
 echo "Configuring generic fallback (.mcp.json)..."
-echo "{{\\"mcpServers\\":{{\\"co-force\\":{{\\"type\\":\\"http\\",\\"url\\":\\"{public_url}/mcp\\",\\"headers\\":{{\\"Authorization\\":\\"Bearer $AGENT_TOKEN\\"}}Outside repo config written.}}}}}}" > .mcp.json
+echo "{{\"mcpServers\":{{\"co-force\":{{\"type\":\"http\",\"url\":\"{public_url}/mcp\",\"headers\":{{\"Authorization\":\"Bearer $AGENT_TOKEN\"}}}}}}}}" > .mcp.json
 if ! grep -q ".mcp.json" .gitignore 2>/dev/null; then
     echo "\n.mcp.json" >> .gitignore
 fi
@@ -1855,6 +2051,31 @@ async fn main() -> Result<()> {
         .await;
     });
 
+    // Spawn reclaim daemon monitoring agent heartbeats & grace periods
+    let bus_reclaim = bus.clone();
+    let agent_repo_reclaim = agent_repo.clone();
+    let task_repo_reclaim = task_repo.clone();
+    let lock_repo_reclaim = lock_repo.clone();
+    let activity_repo_reclaim = activity_repo.clone();
+    let handover_repo_reclaim = handover_repo.clone();
+    let db_conn_reclaim = db_conn.clone();
+    tokio::spawn(async move {
+        co_force_core::orchestration::reclaim::run_reclaim_daemon(
+            bus_reclaim,
+            agent_repo_reclaim,
+            task_repo_reclaim,
+            lock_repo_reclaim,
+            activity_repo_reclaim,
+            handover_repo_reclaim,
+            db_conn_reclaim,
+            co_force_core::types::WorkspaceId::from("default"),
+            std::time::Duration::from_secs(30),  // disconnect_timeout
+            std::time::Duration::from_secs(120), // reclaim_timeout
+            std::time::Duration::from_secs(10),  // poll_interval
+        )
+        .await;
+    });
+
     // === Instantiate Use Cases ===
 
     // Core
@@ -1896,6 +2117,8 @@ async fn main() -> Result<()> {
     let update_task = Arc::new(UpdateTaskUseCase::new(
         task_repo.clone(),
         activity_repo.clone(),
+        db.conn().clone(),
+        agent_repo.clone(),
         bus.clone(),
     ));
     let approve_tasks = Arc::new(ApproveTasksUseCase::new(
@@ -1911,6 +2134,7 @@ async fn main() -> Result<()> {
     let submit_verification = Arc::new(SubmitVerificationUseCase::new(
         task_repo.clone(),
         activity_repo.clone(),
+        db.conn().clone(),
         bus.clone(),
     ));
     let unlock_files = Arc::new(UnlockFilesUseCase::new(
@@ -2160,5 +2384,178 @@ mod tests {
 
         let revoked_check = server_db.validate_token(&enroll_raw).await;
         assert!(revoked_check.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_mcp_guide_tool() {
+        let db = co_force_core::db::Database::open_in_memory().await.unwrap();
+        let bus = co_force_core::orchestration::bus::WorkspaceEventBus::new(16);
+
+        // Repositories
+        let agent_repo = Arc::new(SqliteAgentRepo::new(db.conn().clone()));
+        let activity_repo = Arc::new(SqliteActivityRepo::new(db.conn().clone()));
+        let task_repo = Arc::new(SqliteTaskRepo::new(db.conn().clone()));
+        let lock_repo = Arc::new(SqliteLockRepo::new(db.conn().clone()));
+        let context_repo = Arc::new(SqliteContextRepo::new(db.conn().clone()));
+        let handover_repo = Arc::new(SqliteHandoverRepo::new(db.conn().clone()));
+
+        // Use cases
+        let check_in = Arc::new(CheckInUseCase::new(
+            agent_repo.clone(),
+            activity_repo.clone(),
+            task_repo.clone(),
+            bus.clone(),
+        ));
+        let lock_files = Arc::new(LockFilesUseCase::new(
+            lock_repo.clone(),
+            activity_repo.clone(),
+            bus.clone(),
+        ));
+        let get_agent_context = Arc::new(GetAgentContextUseCase::new(
+            agent_repo.clone(),
+            activity_repo.clone(),
+            context_repo.clone(),
+        ));
+        let share_context = Arc::new(ShareContextUseCase::new(
+            context_repo.clone(),
+            activity_repo.clone(),
+        ));
+        let handover = Arc::new(HandoverUseCase::new(
+            handover_repo.clone(),
+            task_repo.clone(),
+            activity_repo.clone(),
+            bus.clone(),
+        ));
+        let spawn = Arc::new(SpawnUseCase::new());
+        let create_tasks = Arc::new(CreateTasksUseCase::new(
+            task_repo.clone(),
+            activity_repo.clone(),
+            bus.clone(),
+        ));
+        let list_tasks = Arc::new(ListTasksUseCase::new(task_repo.clone()));
+        let update_task = Arc::new(UpdateTaskUseCase::new(
+            task_repo.clone(),
+            activity_repo.clone(),
+            db.conn().clone(),
+            agent_repo.clone(),
+            bus.clone(),
+        ));
+        let approve_tasks = Arc::new(ApproveTasksUseCase::new(
+            task_repo.clone(),
+            activity_repo.clone(),
+            bus.clone(),
+        ));
+        let delegate_task = Arc::new(DelegateTaskUseCase::new(
+            task_repo.clone(),
+            agent_repo.clone(),
+            activity_repo.clone(),
+        ));
+        let submit_verification = Arc::new(SubmitVerificationUseCase::new(
+            task_repo.clone(),
+            activity_repo.clone(),
+            db.conn().clone(),
+            bus.clone(),
+        ));
+        let unlock_files = Arc::new(UnlockFilesUseCase::new(
+            lock_repo.clone(),
+            activity_repo.clone(),
+        ));
+        let check_conflicts = Arc::new(CheckConflictsUseCase::new(lock_repo.clone()));
+        let list_agents = Arc::new(ListAgentsUseCase::new(agent_repo.clone()));
+        let get_workspace_activity = Arc::new(GetWorkspaceActivityUseCase::new(activity_repo.clone()));
+        let send_message = Arc::new(SendMessageUseCase::new(
+            db.conn().clone(),
+            activity_repo.clone(),
+            bus.clone(),
+        ));
+        let wait_events = Arc::new(WaitEventsUseCase::new(
+            db.conn().clone(),
+            bus.clone(),
+            agent_repo.clone(),
+        ));
+        let submit_review = Arc::new(SubmitReviewUseCase::new(
+            task_repo.clone(),
+            db.conn().clone(),
+            bus.clone(),
+        ));
+
+        let llm_provider = Arc::new(co_force_core::llm::OllamaProvider::new("http://localhost:11434"));
+        let vector_search = Arc::new(co_force_core::llm::BruteForceCosine::new(db.conn().clone()));
+
+        let store_memory = Arc::new(co_force_core::llm::StoreMemoryUseCase::new(
+            db.conn().clone(),
+            llm_provider.clone(),
+        ));
+        let recall = Arc::new(co_force_core::llm::RecallUseCase::new(
+            vector_search.clone(),
+            llm_provider.clone(),
+            db.conn().clone(),
+        ));
+        let consolidate_memory = Arc::new(co_force_core::llm::ConsolidateMemoryUseCase::new(
+            db.conn().clone(),
+        ));
+        let create_skill = Arc::new(co_force_core::llm::CreateSkillUseCase::new(
+            db.conn().clone(),
+        ));
+        let list_skills = Arc::new(co_force_core::llm::ListSkillsUseCase::new(
+            db.conn().clone(),
+        ));
+        let get_skill = Arc::new(co_force_core::llm::GetSkillUseCase::new(db.conn().clone()));
+
+        let mcp = CoForceMcp::new(
+            check_in,
+            lock_files,
+            get_agent_context,
+            share_context,
+            handover,
+            spawn,
+            create_tasks,
+            list_tasks,
+            update_task,
+            approve_tasks,
+            delegate_task,
+            submit_verification,
+            unlock_files,
+            check_conflicts,
+            list_agents,
+            get_workspace_activity,
+            send_message,
+            wait_events,
+            submit_review,
+            store_memory,
+            recall,
+            consolidate_memory,
+            create_skill,
+            list_skills,
+            get_skill,
+            db.conn().clone(),
+        );
+
+        // Verify that calling guide before check_in fails with CHECK_IN_REQUIRED
+        let res = mcp.co_force_guide().await;
+        assert_eq!(res.is_error, Some(true));
+        let val: serde_json::Value = serde_json::from_str(&res.content[0].as_text().unwrap().text).unwrap();
+        assert_eq!(val["status"], "error");
+        assert_eq!(val["error"]["code"], "CHECK_IN_REQUIRED");
+
+        // Perform check_in
+        let check_in_params = CheckInParams {
+            workspace_path: "/Users/trungtran/project-x".to_string(),
+            agent_name: "dev-agent-1".to_string(),
+            role: "developer".to_string(),
+            agent_id: Some("agent-123".to_string()),
+            provider: Some("claude-code".to_string()),
+            machine_id: Some("machine-abc".to_string()),
+        };
+        let check_in_res = mcp.co_force_check_in(Parameters(check_in_params)).await;
+        assert_ne!(check_in_res.is_error, Some(true));
+
+        // Call guide again
+        let res_guide = mcp.co_force_guide().await;
+        assert_ne!(res_guide.is_error, Some(true));
+        let guide_val: serde_json::Value = serde_json::from_str(&res_guide.content[0].as_text().unwrap().text).unwrap();
+        assert_eq!(guide_val["protocol_version"], "1.0");
+        assert!(guide_val.get("active_quality_policy").is_some());
+        assert!(guide_val.get("standard_examples").is_some());
     }
 }

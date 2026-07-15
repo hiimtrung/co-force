@@ -199,6 +199,8 @@ pub struct UpdateTaskResponse {
 pub struct UpdateTaskUseCase {
     task_repo: Arc<dyn TaskRepository>,
     activity_repo: Arc<dyn ActivityRepository>,
+    conn: tokio_rusqlite::Connection,
+    agent_repo: Arc<dyn AgentRepository>,
     bus: WorkspaceEventBus,
 }
 
@@ -206,11 +208,15 @@ impl UpdateTaskUseCase {
     pub fn new(
         task_repo: Arc<dyn TaskRepository>,
         activity_repo: Arc<dyn ActivityRepository>,
+        conn: tokio_rusqlite::Connection,
+        agent_repo: Arc<dyn AgentRepository>,
         bus: WorkspaceEventBus,
     ) -> Self {
         Self {
             task_repo,
             activity_repo,
+            conn,
+            agent_repo,
             bus,
         }
     }
@@ -232,8 +238,193 @@ impl UpdateTaskUseCase {
                      Use co_force_submit_verification with real evidence first."
                 );
             }
-            // Check valid transition
-            validate_transition(&task.status, &new_status)?;
+
+            // Load Workspace Quality Policy
+            let ws_id_str = task.workspace_id.to_string();
+            let conn_clone = self.conn.clone();
+            let policy = conn_clone
+                .call(move |c| {
+                    let mut stmt = c.prepare(
+                        "SELECT reviews_required, reviewer_must_differ, require_recheck, require_verification_evidence, required_evidence_kinds, critique_fanout, max_rework_cycles, definition_of_done \
+                         FROM quality_policies WHERE workspace_id = ?1",
+                    )?;
+                    let row_res = stmt.query_row([ws_id_str], |row| {
+                        let required_evidence_kinds_str: String = row.get(4)?;
+                        let definition_of_done_str: String = row.get(7)?;
+                        Ok((
+                            row.get::<_, i64>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, i32>(2)? != 0,
+                            row.get::<_, i32>(3)? != 0,
+                            required_evidence_kinds_str,
+                            row.get::<_, i64>(5)?,
+                            row.get::<_, i64>(6)?,
+                            definition_of_done_str,
+                        ))
+                    });
+                    match row_res {
+                        Ok((
+                            rev_req,
+                            diff,
+                            recheck,
+                            evidence_req,
+                            kinds_str,
+                            fanout,
+                            max_rework,
+                            done_str,
+                        )) => {
+                            let kinds: Vec<String> = serde_json::from_str(&kinds_str)
+                                .unwrap_or_else(|_| vec!["test".to_string()]);
+                            let done: Vec<String> =
+                                serde_json::from_str(&done_str).unwrap_or_default();
+                            Ok(crate::quality::state_machine::QualityPolicy {
+                                reviews_required: rev_req as u8,
+                                reviewer_must_differ: diff,
+                                require_recheck: recheck,
+                                require_verification_evidence: evidence_req,
+                                required_evidence_kinds: kinds,
+                                critique_fanout: fanout as u8,
+                                max_rework_cycles: max_rework as u8,
+                                definition_of_done: done,
+                            })
+                        }
+                        Err(_) => Ok(crate::quality::state_machine::QualityPolicy::default()),
+                    }
+                })
+                .await?;
+
+            // Load verification evidence summary
+            let tid_str = task.task_id.to_string();
+            let revision = task.revision;
+            let conn_clone = self.conn.clone();
+            let evidence_summary = conn_clone
+                .call(move |c| {
+                    let mut stmt = c.prepare(
+                        "SELECT steps, commit_sha FROM verification_records WHERE task_id = ?1 AND task_revision = ?2 ORDER BY created_at DESC LIMIT 1",
+                    )?;
+                    let row_res = stmt.query_row(rusqlite::params![tid_str, revision], |row| {
+                        Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+                    });
+                    match row_res {
+                        Ok((steps_str, commit_sha)) => {
+                            let steps: serde_json::Value =
+                                serde_json::from_str(&steps_str).unwrap_or_default();
+                            let mut has_passing_test = false;
+                            let mut kinds_present = Vec::new();
+                            if let Some(arr) = steps.as_array() {
+                                for step in arr {
+                                    if let Some(kind) = step.get("kind").and_then(|k| k.as_str()) {
+                                        kinds_present.push(kind.to_string());
+                                        if kind == "test" {
+                                            if let Some(code) =
+                                                step.get("exit_code").and_then(|c| c.as_i64())
+                                            {
+                                                if code == 0 {
+                                                    has_passing_test = true;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            Ok(Some(crate::quality::state_machine::EvidenceSummary {
+                                has_passing_test,
+                                kinds_present,
+                                commit_sha,
+                            }))
+                        }
+                        Err(_) => Ok(None),
+                    }
+                })
+                .await?;
+
+            // Load reviews
+            let tid_str = task.task_id.to_string();
+            let revision = task.revision;
+            let conn_clone = self.conn.clone();
+            let reviews = conn_clone
+                .call(move |c| {
+                    let mut stmt = c.prepare(
+                        "SELECT r.reviewer_agent_id, a.provider, r.verdict \
+                         FROM reviews r \
+                         LEFT JOIN agents a ON r.reviewer_agent_id = a.agent_id \
+                         WHERE r.task_id = ?1 AND r.task_revision = ?2",
+                    )?;
+                    let rows = stmt.query_map(rusqlite::params![tid_str, revision], |row| {
+                        Ok(crate::quality::state_machine::ReviewSummary {
+                            reviewer_agent_id: AgentId::from(row.get::<_, String>(0)?),
+                            reviewer_provider: row.get::<_, Option<String>>(1)?,
+                            verdict: row.get::<_, String>(2)?,
+                        })
+                    })?;
+                    let mut list = Vec::new();
+                    for r in rows {
+                        list.push(r?);
+                    }
+                    Ok(list)
+                })
+                .await?;
+
+            let req_agent = self.agent_repo.find_by_id(&req.agent_id).await?;
+            let author_agent = if let Some(ref author_id) = task.assigned_agent_id {
+                self.agent_repo.find_by_id(author_id).await?
+            } else {
+                None
+            };
+
+            let evidence_ref = evidence_summary.as_ref();
+            let ctx = crate::quality::state_machine::TransitionContext {
+                agent_id: &req.agent_id,
+                author_agent_id: task.assigned_agent_id.as_ref(),
+                agent_provider: req_agent.as_ref().and_then(|a| a.provider.as_deref()),
+                author_provider: author_agent.as_ref().and_then(|a| a.provider.as_deref()),
+                rework_cycle: task.rework_cycle as u8,
+                evidence: evidence_ref,
+                reviews: &reviews,
+                policy: &policy,
+            };
+
+            let transition_res = crate::quality::state_machine::validate_transition(
+                &task.status,
+                &new_status,
+                &ctx,
+            );
+
+            if let Err(ref violation) = transition_res {
+                if let crate::quality::state_machine::GateViolation::MaxReworkExceeded {
+                    cycles,
+                    limit,
+                } = violation
+                {
+                    task.status = TaskStatus::Blocked;
+                    task.updated_at = Some(Utc::now());
+                    self.task_repo.update(&task).await?;
+                    self.bus.send(WorkspaceEvent::TaskUpdated {
+                        task_id: req.task_id.to_string(),
+                        new_status: "blocked".to_string(),
+                    });
+                    return Ok(UpdateTaskResponse {
+                        task,
+                        gate_warning: Some(format!(
+                            "Rework cycle limit exceeded ({cycles}/{limit}). Task has been escalated to Blocked."
+                        )),
+                    });
+                } else {
+                    anyhow::bail!("{violation}");
+                }
+            }
+
+            if matches!(new_status, TaskStatus::Rework) {
+                task.rework_cycle += 1;
+            }
+
+            if matches!(
+                (&task.status, &new_status),
+                (TaskStatus::Rework, TaskStatus::InProgress)
+            ) {
+                task.revision += 1;
+            }
+
             task.status = new_status.clone();
             task.updated_at = Some(Utc::now());
 
@@ -275,47 +466,7 @@ impl UpdateTaskUseCase {
     }
 }
 
-/// Validates that the status transition is allowed by the state machine.
-fn validate_transition(from: &TaskStatus, to: &TaskStatus) -> Result<()> {
-    use TaskStatus::*;
-    let allowed = matches!(
-        (from, to),
-        // Normal flow
-        (Draft, SpecReview)
-        | (Draft, Cancelled)
-        | (SpecReview, Draft)       // recheck finds gaps
-        | (SpecReview, AwaitingApproval)
-        | (AwaitingApproval, Approved)
-        | (AwaitingApproval, Draft) // user rejects
-        | (AwaitingApproval, Cancelled)
-        | (Approved, InProgress)
-        | (Approved, Cancelled)
-        | (InProgress, Verification)
-        | (InProgress, Blocked)
-        | (InProgress, PendingHandover)
-        | (InProgress, Cancelled)
-        | (Verification, InProgress) // evidence invalid
-        | (Verification, CodeReview) // evidence valid
-        | (CodeReview, Rework)
-        | (CodeReview, Completed)
-        | (Rework, InProgress)
-        | (Blocked, InProgress)
-        | (Blocked, Cancelled)
-        | (PendingHandover, InProgress)
-        | (PendingHandover, Approved) // timeout — returns to backlog
-        // Self-loop for progress notes (no status change)
-        | (_, _) if from == to
-    );
 
-    if !allowed {
-        anyhow::bail!(
-            "GATE_VIOLATION: Transition from {:?} to {:?} is not allowed by the state machine.",
-            from,
-            to
-        );
-    }
-    Ok(())
-}
 
 // ---------------------------------------------------------------------------
 // ApproveTasksUseCase (user approves tasks in awaiting_approval)
@@ -514,6 +665,7 @@ pub struct SubmitVerificationResponse {
 pub struct SubmitVerificationUseCase {
     task_repo: Arc<dyn TaskRepository>,
     activity_repo: Arc<dyn ActivityRepository>,
+    conn: tokio_rusqlite::Connection,
     bus: WorkspaceEventBus,
 }
 
@@ -521,11 +673,13 @@ impl SubmitVerificationUseCase {
     pub fn new(
         task_repo: Arc<dyn TaskRepository>,
         activity_repo: Arc<dyn ActivityRepository>,
+        conn: tokio_rusqlite::Connection,
         bus: WorkspaceEventBus,
     ) -> Self {
         Self {
             task_repo,
             activity_repo,
+            conn,
             bus,
         }
     }
@@ -556,7 +710,40 @@ impl SubmitVerificationUseCase {
         let verification_id = uuid::Uuid::new_v4().to_string();
 
         // Store verification record in DB via raw SQL
-        // (we log it via activity for now — full repo in Phase 2)
+        let conn_clone = self.conn.clone();
+        let vid = verification_id.clone();
+        let tid = req.task_id.to_string();
+        let ws_id = req.workspace_id.to_string();
+        let revision = task.revision;
+        let commit_sha = req.commit_sha.clone();
+        let steps_str = serde_json::to_string(&req.steps).unwrap_or_default();
+        let agent_id_str = req.agent_id.to_string();
+        let now_str = Utc::now().to_rfc3339();
+
+        conn_clone
+            .call(move |c| {
+                let res = c.execute(
+                    "INSERT INTO verification_records \
+                     (verification_id, task_id, workspace_id, task_revision, commit_sha, steps, submitted_by, created_at) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                    rusqlite::params![
+                        vid,
+                        tid,
+                        ws_id,
+                        revision,
+                        commit_sha,
+                        steps_str,
+                        agent_id_str,
+                        now_str,
+                    ],
+                );
+                match res {
+                    Ok(_) => Ok(()),
+                    Err(e) => Err(tokio_rusqlite::Error::Rusqlite(e)),
+                }
+            })
+            .await?;
+
         let activity = AgentActivity {
             activity_id: ActivityId::new(),
             workspace_id: req.workspace_id.clone(),
@@ -893,6 +1080,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_update_task_gate_violation_completed() {
+        let db = crate::db::Database::open_in_memory().await.unwrap();
         let mut mock_task = MockTaskRepository::new();
         mock_task.expect_find_by_id().returning(|_| {
             Ok(Some(Task {
@@ -920,7 +1108,16 @@ mod tests {
         });
 
         let mock_activity = MockActivityRepository::new();
-        let uc = UpdateTaskUseCase::new(Arc::new(mock_task), Arc::new(mock_activity), make_bus());
+        let mut mock_agent = MockAgentRepository::new();
+        mock_agent.expect_find_by_id().returning(|_| Ok(None));
+
+        let uc = UpdateTaskUseCase::new(
+            Arc::new(mock_task),
+            Arc::new(mock_activity),
+            db.conn().clone(),
+            Arc::new(mock_agent),
+            make_bus(),
+        );
 
         let req = UpdateTaskRequest {
             task_id: TaskId::new(),
@@ -939,6 +1136,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_update_task_invalid_transition() {
+        let db = crate::db::Database::open_in_memory().await.unwrap();
         let mut mock_task = MockTaskRepository::new();
         mock_task.expect_find_by_id().returning(|_| {
             Ok(Some(Task {
@@ -966,7 +1164,16 @@ mod tests {
         });
 
         let mock_activity = MockActivityRepository::new();
-        let uc = UpdateTaskUseCase::new(Arc::new(mock_task), Arc::new(mock_activity), make_bus());
+        let mut mock_agent = MockAgentRepository::new();
+        mock_agent.expect_find_by_id().returning(|_| Ok(None));
+
+        let uc = UpdateTaskUseCase::new(
+            Arc::new(mock_task),
+            Arc::new(mock_activity),
+            db.conn().clone(),
+            Arc::new(mock_agent),
+            make_bus(),
+        );
 
         let req = UpdateTaskRequest {
             task_id: TaskId::new(),
@@ -985,6 +1192,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_submit_verification_requires_test_step() {
+        let db = crate::db::Database::open_in_memory().await.unwrap();
         let mut mock_task = MockTaskRepository::new();
         mock_task.expect_find_by_id().returning(|_| {
             Ok(Some(Task {
@@ -1015,6 +1223,7 @@ mod tests {
         let uc = SubmitVerificationUseCase::new(
             Arc::new(mock_task),
             Arc::new(mock_activity),
+            db.conn().clone(),
             make_bus(),
         );
 
@@ -1036,6 +1245,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_submit_verification_success() {
+        let db = crate::db::Database::open_in_memory().await.unwrap();
         let mut mock_task = MockTaskRepository::new();
         mock_task.expect_find_by_id().returning(|_| {
             Ok(Some(Task {
@@ -1069,6 +1279,7 @@ mod tests {
         let uc = SubmitVerificationUseCase::new(
             Arc::new(mock_task),
             Arc::new(mock_activity),
+            db.conn().clone(),
             make_bus(),
         );
 
